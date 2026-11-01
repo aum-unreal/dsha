@@ -234,3 +234,64 @@ test('preview tool hands the page to the app', async () => {
   assert.equal(results[0].ok, true);
   assert.equal(results[1].ok, false); assert.match(results[1].content, /Only http and https/);
 });
+
+// Live steering: a message sent mid-run is queued and read at the next step boundary.
+const held = chunks => { let release; const f = res => { res.writeHead(200, { 'content-type': 'text/event-stream' }); release = () => { for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`); res.end('data: [DONE]\n\n'); }; }; return [f, () => release()]; };
+const until = async f => { for (let i = 0; i < 100 && !f(); i++) await new Promise(r => setTimeout(r, 30)); assert.ok(f()); };
+
+test('steering: a queued message is read after the step\'s tool results', async () => {
+  const s = (await api('POST', '/api/sessions', { cwd: work, mode: 'auto' })).json;
+  const [step1, release] = held([delta({ reasoning_content: 'look first' }), delta({ tool_calls: [{ index: 0, id: 'l1', type: 'function', function: { name: 'list_dir', arguments: '{"path":"."}' } }] })]);
+  script = [step1, [delta({ content: 'Checked src too.' })]];
+  const n0 = requests.length, p = run(s.id, 'list it');
+  await until(() => requests.length > n0);
+  const q = await api('POST', `/api/sessions/${s.id}/messages`, { text: 'also check src' });
+  assert.equal(q.status, 200); assert.match(q.json.queued, /^q/);
+  release();
+  const ev = await p;
+  assert.equal(ev.at(-1).reason, 'done');
+  assert.deepEqual(ev.find(e => e.type === 'queued'), { ...ev.find(e => e.type === 'queued'), id: q.json.queued, text: 'also check src' });
+  const st = ev.find(e => e.type === 'steer');
+  assert.deepEqual(st.ids, [q.json.queued]);
+  assert.ok(ev.indexOf(st) > ev.findIndex(e => e.type === 'tool_result'), 'read after the tool result');
+  const sent = requests.at(-1).messages;
+  assert.deepEqual(sent.slice(-3).map(m => m.role), ['assistant', 'tool', 'user']);
+  assert.equal(sent.at(-1).content, 'also check src');
+  assert.equal(sent.at(-3).reasoning_content, 'look first', 'reasoning still passed back');
+  const snap = (await api('GET', '/api/sessions/' + s.id)).json;
+  const i = snap.messages.findIndex(m => m.content === 'also check src');
+  assert.equal(snap.meta['steer' + i], true);
+  assert.equal(snap.messages.at(-1).content, 'Checked src too.');
+});
+
+test('steering: a message queued during the final reply keeps the run going', async () => {
+  const s = (await api('POST', '/api/sessions', { cwd: work, mode: 'auto' })).json;
+  const [step1, release] = held([delta({ content: 'All done.' })]);
+  script = [step1, [delta({ content: 'Shorter: done.' })]];
+  const n0 = requests.length, p = run(s.id, 'do it');
+  await until(() => requests.length > n0);
+  await api('POST', `/api/sessions/${s.id}/messages`, { text: 'make it shorter' });
+  release();
+  const ev = await p;
+  assert.equal(ev.filter(e => e.type === 'run_end').length, 1);
+  assert.equal(requests.length - n0, 2);
+  assert.equal(requests.at(-1).messages.at(-1).content, 'make it shorter');
+  assert.equal(ev.filter(e => e.type === 'text').map(e => e.d).join(''), 'All done.Shorter: done.');
+});
+
+test('steering: cancel a queued message; a stop hands queued text back', async () => {
+  const s = (await api('POST', '/api/sessions', { cwd: work, mode: 'auto' })).json;
+  const [step1] = held([delta({ content: 'never' })]);
+  script = [step1];
+  const n0 = requests.length, p = run(s.id, 'wait');
+  await until(() => requests.length > n0);
+  const a = (await api('POST', `/api/sessions/${s.id}/messages`, { text: 'drop me' })).json.queued;
+  const b = (await api('POST', `/api/sessions/${s.id}/messages`, { text: 'keep me' })).json.queued;
+  assert.equal((await api('DELETE', `/api/sessions/${s.id}/queue/${a}`)).status, 200);
+  assert.equal((await api('DELETE', `/api/sessions/${s.id}/queue/${a}`)).status, 409);
+  await api('POST', `/api/sessions/${s.id}/stop`);
+  const ev = await p;
+  assert.equal(ev.at(-1).reason, 'stopped');
+  assert.deepEqual(ev.filter(e => e.type === 'unqueued').map(e => [e.id, e.returned, e.text]), [[a, undefined, undefined], [b, true, 'keep me']]);
+  assert.ok(!(await api('GET', '/api/sessions/' + s.id)).json.messages.some(m => m.content === 'keep me'));
+});

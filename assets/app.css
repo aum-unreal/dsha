@@ -522,3 +522,14 @@ body.wide #agside { display: none; }
 .agreport { font-size: var(--fs-read); }
 .agreport > :first-child { margin-top: 0; } .agreport > :last-child { margin-bottom: 0; }
 @media (prefers-reduced-motion: reduce) { #agside { transition: none; } .agst .livedot, .agstate .livedot { animation: none; } }
+
+/* ---------- live steering: messages sent mid-run wait under the chat until dsh reads them ---------- */
+#queue { max-width: 720px; margin: var(--gap) auto 0; display: flex; flex-direction: column; gap: 8px; padding: 0 16px; }
+#queue:empty { display: none; }
+.msg.user.queued { display: flex; flex-direction: column; gap: 4px; background: var(--ground); border: 1.5px dashed var(--control); color: var(--muted); padding: 10px 6px 4px 14px; }
+.msg.user.queued .qt { padding-right: 8px; }
+.msg.user.queued .qs { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; line-height: 16px; color: var(--faint); }
+.msg.user.queued .qx { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--radius-control); color: var(--faint); }
+.msg.user.queued .qx:active { background: var(--active); color: var(--text); }
+.msg.user.queued .qx svg { width: 14px; height: 14px; }
+.msg.user.steer::before { content: "Sent during the run"; display: block; font-size: 12px; line-height: 16px; color: var(--faint); margin-bottom: 2px; }

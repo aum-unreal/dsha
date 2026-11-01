@@ -108,6 +108,9 @@ async function chat(dir, cont) {
         break;
       case 'usage': break;
       case 'notice': put('', dim(`\n[${ev.text}]\n`)); break;
+      case 'queued': put('', dim(`\n[queued, read after this step: ${ev.text.slice(0, 120)}]\n`)); break;
+      case 'steer': put('', dim('\n[dsh read your queued message]\n')); break;
+      case 'unqueued': if (ev.returned) put('', dim(`\n[not sent, the run ended: ${ev.text}]\n`)); break;
       case 'error': put('', red(`\n${ev.message}\n`)); break;
       case 'run_end': { busy = false; const u = ev.total; put('', dim(`\n[${ev.reason}]\n`)); rl.prompt(); break; }
     }
@@ -123,7 +126,7 @@ async function chat(dir, cont) {
       if (t === '/compact') { await call('POST', `/api/sessions/${s.id}/compact`); console.log(dim('compacted')); return rl.prompt(); }
       const m = t.match(/^\/(mode|model|effort)\s+(\S+)/);
       if (m) { await call('PATCH', `/api/sessions/${s.id}`, { [m[1]]: m[2] }); console.log(dim(`${m[1]} = ${m[2]}`)); return rl.prompt(); }
-      if (busy) { console.log(dim('busy — /stop first')); return; }
+      // Mid-run it is queued and read after the current step (live steering).
       busy = true; mode = '';
       await call('POST', `/api/sessions/${s.id}/messages`, { text: t });
     } catch (e) { busy = false; console.log(red(e.message)); rl.prompt(); }

@@ -53,6 +53,7 @@ export class Runtime {
     this.s = s; this.config = config; this.mcp = mcp;
     this.events = []; this.seq = 0; this.subs = new Set();
     this.running = false; this.abort = null; this.waiting = new Map(); this.subStats = new Map(); this.runBase = s.messages.length; this.runSeq = 0;
+    this.queue = []; // live steering: messages sent during a run, read at the next step boundary
   }
 
   emit(type, data = {}) {
@@ -76,7 +77,26 @@ export class Runtime {
   }
   save() { saveSession(this.s); }
 
-  send(text) { this.start(text); }
+  // During a run a message waits in the queue (its id is returned) instead of being refused.
+  send(text) { if (this.running) return this.enqueue(text); this.start(text); }
+  enqueue(text) {
+    const q = { id: 'q' + (++this.qn || (this.qn = 1)) + Date.now().toString(36), text };
+    this.queue.push(q); this.emit('queued', q); return q.id;
+  }
+  unqueue(id) {
+    const i = this.queue.findIndex(q => q.id === id); if (i < 0) return false;
+    this.queue.splice(i, 1); this.emit('unqueued', { id }); return true;
+  }
+  // Hand the queue to the model as one user turn: after a step's tool results, or in place of
+  // ending the run. A model call already streaming can't take it, so it lands at the boundary.
+  drain() {
+    if (!this.queue.length) return false;
+    const qs = this.queue.splice(0), text = qs.map(q => q.text).join('\n\n');
+    this.s.messages.push({ role: 'user', content: text });
+    this.s.meta['steer' + (this.s.messages.length - 1)] = true;
+    this.emit('steer', { ids: qs.map(q => q.id), text });
+    return true;
+  }
 
   // Run again from where a failed run stopped: the last message is the user's or a tool result.
   retry() {
@@ -109,8 +129,13 @@ export class Runtime {
       this.running = false; this.abort = null; this.endReason = null;
       for (const r of this.waiting.values()) r('deny');
       this.waiting.clear();
+      // Messages still queued: after a stop or failure they go back to the sender's input box;
+      // one that slipped in as the run finished starts the next run.
+      const left = this.queue.splice(0), next = reason === 'done' && left.length ? left.map(q => q.text).join('\n\n') : null;
+      for (const q of left) this.emit('unqueued', { id: q.id, text: q.text, returned: next == null });
       this.save();
       this.emit('run_end', { reason });
+      if (next != null) try { this.start(next); } catch (e) { this.emit('notice', { text: `Couldn't send your queued message: ${e.message}` }); }
     });
   }
 
@@ -152,7 +177,7 @@ export class Runtime {
       this.account(usage, genMs);
       this.save();
       if (finish === 'length' && !message.tool_calls) { this.emit('notice', { text: 'Reply hit the output token limit.' }); }
-      if (!message.tool_calls?.length) return;
+      if (!message.tool_calls?.length) { if (this.drain()) { this.save(); continue; } return; }
       // Subagents in one reply run side by side; other tools keep their order. Results go back in call order.
       const calls = message.tool_calls, out = [];
       const one = async (c, i) => { out[i] = signal.aborted ? 'Cancelled: the user stopped the run.' : await this.runTool(c, signal); };
@@ -160,6 +185,7 @@ export class Runtime {
       for (const [i, c] of calls.entries()) if (c.function.name !== 'agent') await one(c, i);
       await subs;
       for (const [i, c] of calls.entries()) s.messages.push({ role: 'tool', tool_call_id: c.id, content: out[i] });
+      if (!signal.aborted) this.drain();
       this.save();
     }
     this.endReason = 'max_steps';

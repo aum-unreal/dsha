@@ -381,6 +381,27 @@ const stat = http.createServer((req, res) => {
     await page.locator('#itabs [data-t=activity]').click();
     await page.setViewportSize({ width: 360, height: 780 }); await page.evaluate(() => window.native.posture(0, 180, 390)); await page.waitForTimeout(250);
 
+    // Live steering: mid-run the send button queues the message under the chat; dsh reads it after
+    // the step's tool results and it becomes a normal bubble. The model sees it as the last turn.
+    let release;
+    script = [res => { res.writeHead(200, { 'content-type': 'text/event-stream' }); release = () => { res.write(`data: ${JSON.stringify(delta({ tool_calls: [{ index: 0, id: 'st1', type: 'function', function: { name: 'list_dir', arguments: '{"path":"."}' } }] }))}\n\n`); res.end('data: [DONE]\n\n'); }; },
+      [delta({ content: 'Looked in src as well.' })]];
+    await page.locator('#input').fill('Look around');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await page.getByRole('button', { name: 'Stop' }).waitFor();
+    await page.locator('#input').fill('Also look in src');
+    await page.getByRole('button', { name: 'Send after this step' }).click();
+    await page.locator('#queue .queued', { hasText: 'Queued' }).waitFor();
+    assert.equal(await page.locator('#input').inputValue(), '');
+    await page.waitForTimeout(200); await page.screenshot({ path: shot('steer-queued') });
+    release();
+    await page.locator('.md', { hasText: 'Looked in src as well.' }).waitFor({ timeout: 20000 });
+    assert.equal(await page.locator('#queue .queued').count(), 0);
+    assert.equal(await page.locator('.msg.user.steer', { hasText: 'Also look in src' }).count(), 1);
+    await page.waitForTimeout(200); await page.screenshot({ path: shot('steer-read') });
+    await page.reload(); await page.locator('.md', { hasText: 'Looked in src as well.' }).waitFor();
+    assert.equal(await page.locator('.msg.user.steer', { hasText: 'Also look in src' }).count(), 1, 'the steer survives a reload');
+
     // Agent setup page: subagents first, then plugins, skills, instruction files.
     await page.getByRole('button', { name: 'Sessions' }).click(); await page.waitForTimeout(250);
     await page.locator('#agentBtn').click();

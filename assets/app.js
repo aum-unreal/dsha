@@ -150,7 +150,7 @@ let mdQueue = new Set(), mdTimer = 0;
 function paint(it) {
   const e = it.el; ui(); strip();
   switch (it.kind) {
-    case 'user': e.textContent = it.text; e.classList.toggle('pending', !!it.pending); break;
+    case 'user': e.textContent = it.text; e.classList.toggle('pending', !!it.pending); e.classList.toggle('steer', !!it.steer); break;
     case 'text':
       if (it.live) { mdQueue.add(it); if (!mdTimer) mdTimer = setTimeout(flushMd, 70); }
       else { renderMd(e, it.text); e.classList.remove('cursor'); }
@@ -202,10 +202,10 @@ function closeLive() {
 }
 
 function fromMessages(msgs, meta = {}) {
-  log.textContent = ''; S.items = []; agHue.clear(); agView.sel = null; agView.open.clear();
+  log.textContent = ''; S.items = []; for (const q of [...S.queue]) queuedDrop(q); agHue.clear(); agView.sel = null; agView.open.clear();
   const tools = {}; let turn = 0;
   msgs.forEach((m, i) => {
-    if (m.role === 'user') add({ kind: 'user', text: m.content, turn: turn++ });
+    if (m.role === 'user') add({ kind: 'user', text: m.content, turn: turn++, steer: !!meta['steer' + i] });
     else if (m.role === 'assistant') {
       if (m.reasoning_content) add({ kind: 'think', text: m.reasoning_content, ms: meta['think' + i] });
       if (m.content) add({ kind: 'text', text: m.content });
@@ -260,6 +260,22 @@ function apply(ev) {
     case 'approval_done': { const t = tool(ev.id); if (t && t.status === 'waiting') { t.status = ev.decision === 'deny' ? 'denied' : 'run'; paint(t); } break; }
     case 'tool_output': { const t = tool(ev.id); if (t) { t.output = clipText((t.output || '') + ev.d, 12000); if (t.el.classList.contains('open')) paint(t); } break; }
     case 'tool_result': { const t = tool(ev.id); if (t) { Object.assign(t, { content: ev.content, status: ev.denied ? 'denied' : ev.ok ? 'ok' : 'fail', ms: ev.ms }, ev.agent ? { agent: ev.agent, nTools: ev.tools, stats: { model: ev.model, steps: ev.steps, in: ev.in, out: ev.out } } : {}); paint(t); } break; }
+    case 'queued': {
+      if (S.queue.some(x => x.qid === ev.id)) break;
+      const mine = S.queue.find(x => !x.qid && x.text === ev.text); // our own POST, its reply still in flight
+      if (mine) { mine.qid = ev.id; paintQueued(mine); } else queuedAdd({ qid: ev.id, text: ev.text });
+      break;
+    }
+    case 'unqueued': {
+      const q = S.queue.find(x => x.qid === ev.id); if (q) queuedDrop(q);
+      // A stop or failure hands unread messages back to the input box.
+      if (ev.returned && ev.text) { input.value = ev.text + (input.value ? '\n\n' + input.value : ''); grow(); syncSend(); local.set('draft', input.value); toast('Not sent: the run ended first'); }
+      break;
+    }
+    case 'steer':
+      for (const q of S.queue.filter(x => ev.ids.includes(x.qid))) queuedDrop(q);
+      closeLive(); add({ kind: 'user', text: ev.text, steer: true, turn: S.items.filter(x => x.kind === 'user').length }); stick = true;
+      break;
     case 'usage': if (S.cur) { S.cur.usage = ev.total; meter(); } S.gen = null; break;
     case 'todos': S.todos = ev.todos; todos(); break;
     case 'title': if (S.cur) { S.cur.title = ev.title; header(); } break;
@@ -415,7 +431,6 @@ function todos() {
 }
 function setRunning(r) {
   S.running = r;
-  const b = $('#sendBtn'); b.classList.toggle('stop', r); b.innerHTML = r ? I.stop : I.send; b.ariaLabel = r ? 'Stop' : 'Send';
   syncSend();
   document.body.classList.toggle('running', r);
   todos(); strip();
@@ -448,7 +463,7 @@ let stripQueued = false;
 function strip() { if (!stripQueued) { stripQueued = true; requestAnimationFrame(() => { stripQueued = false; drawStrip(); }); } }
 function drawStrip() {
   const bar = $('#run'), segs = $('#runSegs');
-  const lt = S.items.map(x => x.kind).lastIndexOf('user');
+  const lt = S.items.findLastIndex(x => x.kind === 'user' && !x.steer);
   const steps = (lt < 0 ? [] : S.items.slice(lt + 1)).filter(x => !x.parent && (x.kind === 'think' || x.kind === 'tool' || x.kind === 'text'));
   const failed = !S.running && last()?.kind === 'apierr';
   bar.classList.toggle('on', (!!steps.length || failed) && (S.running || !!S.cur));
@@ -491,13 +506,19 @@ function waitText() {
 /* ---------- composer ---------- */
 const input = $('#input');
 function grow() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, innerHeight * .34) + 'px'; }
-function syncSend() { $('#sendBtn').disabled = !S.running && !input.value.trim(); }
+// Mid-run the button is Stop while the box is empty and Send (queued for after this step) once you type.
+function syncSend() {
+  const b = $('#sendBtn'), typed = !!input.value.trim(), k = S.running && !typed ? 'stop' : 'send';
+  b.disabled = !S.running && !typed;
+  if (b.dataset.k !== k) { b.dataset.k = k; b.innerHTML = I[k]; b.classList.toggle('stop', k === 'stop'); }
+  b.ariaLabel = k === 'stop' ? 'Stop' : S.running ? 'Send after this step' : 'Send';
+}
 input.addEventListener('input', () => { grow(); syncSend(); slash(); local.set('draft', input.value); });
 input.addEventListener('keydown', e => {
   if (!$('#slash').hidden && (e.key === 'Enter' || e.key === 'Tab')) { e.preventDefault(); $('#slash .sel')?.click(); return; }
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || !matchMedia('(pointer:coarse)').matches && !e.shiftKey)) { e.preventDefault(); send(); }
 });
-$('#sendBtn').onclick = () => S.running ? stop() : send();
+$('#sendBtn').onclick = () => S.running && !input.value.trim() ? stop() : send();
 
 const COMMANDS = [
   ['/new', 'New session', () => newSession()], ['/compact', 'Summarise history to free context', () => compact()],
@@ -514,8 +535,9 @@ function slash() {
 }
 
 async function send() {
-  const text = input.value.trim(); if (!text || S.running) return;
+  const text = input.value.trim(); if (!text) return;
   const cmd = COMMANDS.find(c => c[0] === text); if (cmd) { input.value = ''; grow(); $('#slash').hidden = true; return cmd[2](); }
+  if (S.running) return steer(text);
   haptic();
   try {
     if (!S.cur) { const s = await api('POST', '/api/sessions', {}); await load(s.id); }
@@ -526,6 +548,33 @@ async function send() {
     const p = S.items.find(x => x.pending); if (p) { p.el.remove(); S.items.splice(S.items.indexOf(p), 1); input.value = text; grow(); syncSend(); }
     toast(e.message); emptyState();
   }
+}
+// Live steering: mid-run, a message waits under the chat and dsh reads it after the current step
+// (its tool results, or the reply it is writing). It can be cancelled until then.
+async function steer(text) {
+  haptic();
+  input.value = ''; grow(); local.set('draft', ''); syncSend(); $('#slash').hidden = true;
+  const q = queuedAdd({ text }); stick = true; follow();
+  try {
+    const r = await api('POST', `/api/sessions/${S.cur.id}/messages`, { text });
+    if (!r.queued) { queuedDrop(q); return; } // the run had just ended: it started a new one, whose user event draws the bubble
+    const dup = S.queue.find(x => x !== q && x.qid === r.queued); if (dup) queuedDrop(dup);
+    q.qid = r.queued; paintQueued(q);
+  } catch (e) { queuedDrop(q); input.value = text + (input.value ? '\n\n' + input.value : ''); grow(); syncSend(); toast(e.message); }
+}
+S.queue = [];
+function queuedAdd(q) {
+  q.el = h('div', 'msg user queued', '<span class="qt"></span><span class="qs"><span class="ql"></span><button class="qx" aria-label="Cancel queued message"></button></span>');
+  q.el.querySelector('.qx').innerHTML = I.x;
+  q.el.querySelector('.qx').onclick = () => cancelQueued(q);
+  S.queue.push(q); $('#queue').append(q.el); paintQueued(q); return q;
+}
+function paintQueued(q) { q.el.querySelector('.qt').textContent = q.text; q.el.querySelector('.ql').textContent = q.qid ? 'Queued · read after this step' : 'Sending…'; q.el.querySelector('.qx').hidden = !q.qid; }
+function queuedDrop(q) { q.el.remove(); S.queue.splice(S.queue.indexOf(q), 1); }
+async function cancelQueued(q) {
+  haptic();
+  try { await api('DELETE', `/api/sessions/${S.cur.id}/queue/${q.qid}`); if (S.queue.includes(q)) queuedDrop(q); input.value = q.text + (input.value ? '\n\n' + input.value : ''); grow(); syncSend(); local.set('draft', input.value); }
+  catch (e) { toast(e.message); }
 }
 async function stop() { haptic(); try { await api('POST', `/api/sessions/${S.cur.id}/stop`); } catch (e) { toast(e.message); } }
 async function compact() {

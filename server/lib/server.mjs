@@ -14,7 +14,7 @@ import { systemPrompt } from './agent.mjs';
 import { listAgents, readAgent, saveAgent, setAgent, setClaudeAgents, deleteAgent } from './agents.mjs';
 import { TOOLS } from './tools.mjs';
 
-export const VERSION = '0.6.1';
+export const VERSION = '0.7.0';
 
 export function createServer({ config = loadConfig } = {}) {
   let cfg = config();
@@ -101,7 +101,8 @@ export function createServer({ config = loadConfig } = {}) {
       Object.assign(r.s, p); r.save(); r.emit('session', { patch: p }); return r.snapshot();
     }],
     ['DELETE', /^\/api\/sessions\/(\w+)$/, ([id]) => { dropRuntime(id); deleteSession(id); return { ok: true }; }],
-    ['POST', /^\/api\/sessions\/(\w+)\/messages$/, ([id], b) => { const text = String(b.text || '').trim(); if (!text) throw httpErr(400, 'Empty message'); const r = rt(id); try { r.send(text); } catch (e) { throw httpErr(409, e.message); } return { ok: true, seq: r.seq }; }],
+    ['POST', /^\/api\/sessions\/(\w+)\/messages$/, ([id], b) => { const text = String(b.text || '').trim(); if (!text) throw httpErr(400, 'Empty message'); const r = rt(id); let q; try { q = r.send(text); } catch (e) { throw httpErr(409, e.message); } return { ok: true, seq: r.seq, ...(q ? { queued: q } : {}) }; }],
+    ['DELETE', /^\/api\/sessions\/(\w+)\/queue\/(\w+)$/, ([id, q]) => { if (!rt(id).unqueue(q)) throw httpErr(409, 'Already read by dsh'); return { ok: true }; }],
     ['POST', /^\/api\/sessions\/(\w+)\/retry$/, ([id]) => { const r = rt(id); try { r.retry(); } catch (e) { throw httpErr(409, e.message); } return { ok: true, seq: r.seq }; }],
     ['POST', /^\/api\/sessions\/(\w+)\/stop$/, ([id]) => { rt(id).stop(); return { ok: true }; }],
     ['POST', /^\/api\/sessions\/(\w+)\/approve$/, ([id], b) => ({ ok: rt(id).approve(String(b.id), ['allow', 'always', 'deny'].includes(b.decision) ? b.decision : 'deny') })],
@@ -111,7 +112,9 @@ export function createServer({ config = loadConfig } = {}) {
       const r = rt(id); if (r.running) throw httpErr(409, 'Stop the run first');
       let n = -1, cut = r.s.messages.length;
       r.s.messages.forEach((m, i) => { if (m.role === 'user' && ++n === b.turn && cut === r.s.messages.length) cut = i; });
-      const text = r.s.messages[cut]?.content; r.s.messages = r.s.messages.slice(0, cut); r.runBase = cut; r.save();
+      const text = r.s.messages[cut]?.content; r.s.messages = r.s.messages.slice(0, cut); r.runBase = cut;
+      for (const k of Object.keys(r.s.meta)) { const m = k.match(/^(?:steer|think)(\d+)$/); if (m && +m[1] >= cut) delete r.s.meta[k]; }
+      r.save();
       return { ok: true, text, session: r.snapshot() };
     }],
     ['GET', /^\/api\/fs$/, (q) => {
