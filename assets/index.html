@@ -6,8 +6,7 @@
 <meta name="color-scheme" content="dark">
 <title>DSHA</title>
 <link rel="icon" href="data:,">
-<link rel="preload" href="fonts/dm.ttf" as="font" type="font/ttf" crossorigin>
-<link rel="preload" href="fonts/fraunces.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="fonts/inter.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -21,8 +20,8 @@
       </div>
       <button class="chip" id="modeChip" aria-label="Permission mode"></button>
       <button class="icon" id="moreBtn" aria-label="Session options"></button>
-      <div id="runbar" aria-hidden="true"></div>
     </header>
+    <div id="run" aria-live="polite"><div id="runSegs"></div><div id="runText"></div></div>
     <main id="scroller"><div id="log"></div><div id="empty"></div></main>
     <button id="jump" aria-label="Scroll to bottom" hidden></button>
     <footer id="deck">

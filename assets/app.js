@@ -1,4 +1,4 @@
-// DSHA — phone UI for the dsh agent backend.
+// DSHA, phone UI for the dsh agent backend.
 // Transport: inside the APK every call goes through window.Native (Java does the
 // HTTP/SSE). In a plain browser (tests, desktop) it falls back to fetch with the
 // URL/token from localStorage.
@@ -17,8 +17,13 @@ const I = {
   pen: svg('<path d="M4 20h4L19 9l-4-4L4 16z"/>'), search: svg('<circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/>'), globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'),
   list: svg('<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>'), retry: svg('<path d="M4 4v6h6"/><path d="M20 12a8 8 0 0 0-14-5.3L4 10"/><path d="M20 20v-6h-6"/><path d="M4 12a8 8 0 0 0 14 5.3l2-3.3"/>'),
   arrow: svg('<path d="M5 12h14M13 6l6 6-6 6"/>'), activity: svg('<path d="M3 12h4l3-8 4 16 3-8h4"/>'), chart: svg('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'), fold: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>'),
+  circle: svg('<circle cx="12" cy="12" r="7"/>'), half: svg('<circle cx="12" cy="12" r="7"/><path d="M12 5a7 7 0 0 1 0 14z" fill="currentColor"/>'),
   share: svg('<path d="M12 3v13M7 8l5-5 5 5"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/>'), trash: svg('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'), link: svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
 };
+const MARK = '<svg class="mark" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="6" fill="#fff" stroke="none"/><path d="M6.5 13c1.8-3.4 3.7-3.4 5.5 0s3.7 3.4 5.5 0" stroke="#000" stroke-width="2.2"/></svg>';
+const TOOL_NAME = { bash: 'Shell', read_file: 'Read file', write_file: 'Write file', edit_file: 'Edit file', list_dir: 'List folder', grep: 'Search', glob: 'Find files', web_fetch: 'Fetch', todo_write: 'Task list' };
+const tname = n => TOOL_NAME[n] || n.replace(/_/g, ' ');
+const TODO_ICON = { completed: I.check, in_progress: I.half, pending: I.circle };
 const TOOL_ICON = { bash: I.term, read_file: I.file, write_file: I.pen, edit_file: I.pen, list_dir: I.folder, grep: I.search, glob: I.search, web_fetch: I.globe, todo_write: I.list };
 const MODES = { ask: ['Ask', 'Asks before shell, edits and web fetches'], edits: ['Edits', 'File edits run freely; shell still asks'], auto: ['Auto', 'Everything runs without asking'] };
 
@@ -81,7 +86,7 @@ const log = $('#log'), scroller = $('#scroller');
 
 function nearBottom() { return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90; }
 let stick = true;
-scroller.addEventListener('scroll', () => { stick = nearBottom(); $('#jump').hidden = stick; }, { passive: true });
+scroller.addEventListener('scroll', () => { stick = nearBottom(); $('#jump').hidden = stick; $('#top').classList.toggle('scrolled', scroller.scrollTop > 4); }, { passive: true });
 function follow() { if (stick) scroller.scrollTop = scroller.scrollHeight; }
 $('#jump').innerHTML = I.down; $('#jump').onclick = () => { stick = true; scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' }); };
 
@@ -95,7 +100,7 @@ function build(it) {
     case 'think': { const e = h('div', 'think'), b = h('button', null, I.chev + '<span></span>'); b.onclick = () => { e.classList.toggle('open'); haptic(); }; e.append(b, h('div', 'body')); return e; }
     case 'tool': {
       const e = h('div', 'tool');
-      e.innerHTML = `<button class="head"><span class="ti">${TOOL_ICON[it.name] || I.term}</span><span class="tn"></span><span class="ts"></span><span class="ms"></span><span class="st"></span></button><div class="ask"><p></p><div class="cmd"></div><div class="row"><button class="deny">Deny</button><button class="always">Always</button><button class="allow">Allow</button></div></div><div class="out"><pre class="args"></pre><pre class="res"></pre></div>`;
+      e.innerHTML = `<button class="head"><span class="ti">${TOOL_ICON[it.name] || I.term}</span><span class="tn"></span><span class="ts"></span><span class="st"></span></button><div class="ask"><p></p><div class="cmd"></div><div class="row"><button class="deny">Deny</button><button class="always">Always</button><button class="allow">Allow</button></div></div><div class="out"><pre class="args"></pre><pre class="res"></pre></div>`;
       e.querySelector('.head').onclick = () => { haptic(); if (layout.mode === 'wide') { S.sel = S.sel === it.id ? null : it.id; S.itab = 'activity'; for (const t of S.items) if (t.kind === 'tool') t.el.classList.toggle('sel', t.id === S.sel); ui(); } else e.classList.toggle('open'); };
       for (const d of ['allow', 'always', 'deny']) e.querySelector('.' + d).onclick = () => decide(it, d);
       return e;
@@ -111,7 +116,7 @@ function build(it) {
 }
 let mdQueue = new Set(), mdTimer = 0;
 function paint(it) {
-  const e = it.el; ui();
+  const e = it.el; ui(); strip();
   switch (it.kind) {
     case 'user': e.textContent = it.text; e.classList.toggle('pending', !!it.pending); break;
     case 'text':
@@ -127,10 +132,9 @@ function paint(it) {
     }
     case 'tool': {
       e.className = 'tool ' + (it.status || 'run') + (e.classList.contains('open') ? ' open' : '') + (S.sel === it.id ? ' sel' : '');
-      e.querySelector('.tn').textContent = it.name.replace('_', ' ');
+      e.querySelector('.tn').textContent = tname(it.name);
       e.querySelector('.ts').textContent = it.summary || '';
-      e.querySelector('.ms').textContent = it.ms != null ? fmtMs(it.ms) : '';
-      e.querySelector('.st').innerHTML = { run: '<span class="spin"></span>', waiting: '', ok: I.check, fail: I.x, denied: I.ban }[it.status || 'run'];
+      e.querySelector('.st').textContent = statusText(it);
       e.querySelector('.args').textContent = argsText(it);
       e.querySelector('.res').textContent = it.content ?? it.output ?? '';
       e.querySelector('.ask p').textContent = askText(it);
@@ -141,7 +145,8 @@ function paint(it) {
   }
 }
 function flushMd() { mdTimer = 0; for (const it of mdQueue) { renderMd(it.el, it.text); it.el.classList.toggle('cursor', !!it.live); } mdQueue.clear(); follow(); }
-const fmtMs = ms => ms < 1000 ? ms + 'ms' : ms < 60000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms / 60000) + 'm';
+const fmtMs = ms => ms < 1000 ? ms + ' ms' : ms < 60000 ? (ms / 1000).toFixed(1) + ' s' : Math.round(ms / 60000) + ' min';
+const statusText = it => { const st = it.status || 'run', t = it.ms != null ? ' · ' + fmtMs(it.ms) : ''; return { run: 'Running', waiting: 'Needs you', ok: 'Done' + t, fail: 'Failed' + t, denied: 'Denied' }[st]; };
 const askText = it => ({ bash: 'Run this command?', write_file: 'Write this file?', edit_file: 'Apply this edit?', web_fetch: 'Fetch this URL?' }[it.name] || `Allow ${it.name}?`);
 function argsText(it) {
   const a = it.args || {};
@@ -152,7 +157,7 @@ function argsText(it) {
 }
 
 function closeLive() {
-  for (const it of S.items) if (it.live) { it.live = false; if (it.kind === 'think') it.ms = Date.now() - it.t0; paint(it); }
+  for (const it of S.items) if (it.live) { it.live = false; if (it.t0) it.ms = Date.now() - it.t0; paint(it); }
 }
 
 function fromMessages(msgs, meta = {}) {
@@ -191,12 +196,12 @@ function apply(ev) {
       break;
     }
     case 'reasoning':
-      if (L?.kind === 'think' && L.live) { L.text += ev.d; paint(L); } else { closeLive(); add({ kind: 'think', text: ev.d, live: true, t0: ev.t }); }
+      if (L?.kind === 'think' && L.live) { L.text += ev.d; paint(L); } else { closeLive(); add({ kind: 'think', text: ev.d, live: true, t0: ev.t || Date.now() }); }
       break;
     case 'text':
-      if (L?.kind === 'text' && L.live) { L.text += ev.d; paint(L); } else { closeLive(); add({ kind: 'text', text: ev.d, live: true }); }
+      if (L?.kind === 'text' && L.live) { L.text += ev.d; paint(L); } else { closeLive(); add({ kind: 'text', text: ev.d, live: true, t0: Date.now() }); }
       break;
-    case 'tool_call': closeLive(); add({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args || {}, summary: ev.summary, status: 'run', output: '' }); break;
+    case 'tool_call': closeLive(); add({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args || {}, summary: ev.summary, status: 'run', output: '', t0: Date.now() }); break;
     case 'approval': { const t = tool(ev.id); if (t) { t.status = 'waiting'; paint(t); stick = true; } haptic(); if (!visible()) N?.notify('dsh needs approval', `${ev.name}: ${String(ev.summary).slice(0, 200)}`); break; }
     case 'approval_done': { const t = tool(ev.id); if (t && t.status === 'waiting') { t.status = ev.decision === 'deny' ? 'denied' : 'run'; paint(t); } break; }
     case 'tool_output': { const t = tool(ev.id); if (t) { t.output = clipText((t.output || '') + ev.d, 12000); if (t.el.classList.contains('open')) paint(t); } break; }
@@ -219,7 +224,7 @@ const tool = id => S.items.find(x => x.kind === 'tool' && x.id === id);
 async function decide(it, d) {
   haptic();
   it.status = d === 'deny' ? 'denied' : 'run'; paint(it);
-  try { await api('POST', `/api/sessions/${S.cur.id}/approve`, { id: it.id, decision: d }); if (d === 'always') toast(`${it.name.replace('_', ' ')} allowed for this session`); }
+  try { await api('POST', `/api/sessions/${S.cur.id}/approve`, { id: it.id, decision: d }); if (d === 'always') toast(`${tname(it.name)} allowed for this session`); }
   catch (e) { toast(e.message); }
 }
 
@@ -268,12 +273,12 @@ function renderSessions(box = $('#sessions')) {
     box.append(h('div', 'sgroup', name));
     for (const s of list) {
       used.add(s.id);
-      const b = h('button', 'sitem' + (s.id === S.cur?.id ? ' cur' : ''), `<div class="sx"><div class="st1">${esc(s.title)}</div><div class="st2">${esc(short(s.cwd))} · ${s.turns} turn${s.turns === 1 ? '' : 's'}</div></div>${s.running ? '<span class="live"></span>' : ''}`);
+      const b = h('button', 'sitem' + (s.id === S.cur?.id ? ' cur' : ''), `<div class="sx"><div class="st1">${esc(s.title)}</div><div class="st2">${esc(short(s.cwd))} · ${s.turns} turn${s.turns === 1 ? '' : 's'}</div></div>${s.running ? '<span class="livedot" aria-label="Running"></span>' : ''}`);
       b.onclick = () => { drawer(false); if (s.id !== S.cur?.id) { S.sel = null; load(s.id).catch(e => toast(e.message)); } };
       box.append(b);
     }
   }
-  if (!S.sessions.length) box.append(h('div', 'hint', 'No sessions yet.'));
+  if (!S.sessions.length) box.append(h('div', 'hint', 'No sessions yet. Start one and it shows up here.'));
 }
 const home = () => S.health?.home ? S.health.home.replace(/\/\.dsh$/, '') : '/data/data/com.termux/files/home';
 const short = p => String(p || '').replace(home(), '~');
@@ -281,17 +286,20 @@ const short = p => String(p || '').replace(home(), '~');
 function header() {
   const s = S.cur;
   $('#title').textContent = s ? s.title : 'DSHA';
-  $('#cwdChip').textContent = s ? short(s.cwd) : S.health ? 'not in a session' : 'not connected';
+  $('#cwdChip').textContent = s ? short(s.cwd) : S.health ? 'Not in a session' : 'Not connected';
   const m = s?.mode || S.cfg?.mode || 'ask';
-  $('#modeChip').className = 'chip ' + m; $('#modeChip').innerHTML = `<span class="dot"></span>${MODES[m][0]}`;
+  $('#modeChip').className = 'chip ' + m; $('#modeChip').textContent = MODES[m][0];
 }
 function meter() {
   const s = S.cur; if (!s) { $('#meter').textContent = ''; return; }
   const u = s.usage || {}, ctx = u.lastPrompt || 0;
   const k = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
   const c = u.costPeak || 0;
-  $('#meter').innerHTML = `<span><b>${esc(s.model.replace('deepseek-', ''))}</b> · ${s.thinking === false ? 'no thinking' : esc(s.effort)}</span><span>ctx <b>${k(ctx)}</b> · <i class="mx">${k((u.hit || 0) + (u.miss || 0))} in · ${k(u.out || 0)} out · </i><b>$${c < 0.01 ? c.toFixed(4) : c.toFixed(3)}</b></span>`; ui();
+  $('#meter').innerHTML = `<span><b>${esc(modelName(s.model))}</b> · ${s.thinking === false ? 'no thinking' : esc(s.effort) + ' thinking'}</span><span><b>${k(ctx)}</b> context · <i class="mx">${k((u.hit || 0) + (u.miss || 0))} in · ${k(u.out || 0)} out · </i><b>$${c < 0.01 ? c.toFixed(4) : c.toFixed(3)}</b></span>`; ui();
 }
+const cap = t => String(t || '').replace(/^./, c => c.toUpperCase());
+const modelName = m => ({ 'deepseek-flash': 'Flash', 'deepseek-v4-pro': 'V4 Pro' }[m] || String(m).replace('deepseek-', ''));
+const taskList = t => t.map(x => `<li class="${x.status}">${TODO_ICON[x.status] || I.circle}<span>${esc(x.content)}</span></li>`).join('');
 function todos() {
   ui();
   const box = $('#todos'), t = S.todos || [];
@@ -300,7 +308,7 @@ function todos() {
   const cur = t.find(x => x.status === 'in_progress') || t.find(x => x.status === 'pending') || t[t.length - 1];
   const done = t.filter(x => x.status === 'completed').length;
   box.className = S.todosOpen ? 'open' : '';
-  box.innerHTML = `<button>${I.list}<b>${esc(cur.content)}</b><span class="n">${done}/${t.length}</span></button><ul>${t.map(x => `<li class="${x.status}"><i>${x.status === 'completed' ? '✓' : x.status === 'in_progress' ? '▸' : '·'}</i>${esc(x.content)}</li>`).join('')}</ul>`;
+  box.innerHTML = `<button>${I.list}<b>${esc(cur.content)}</b><span>${done} of ${t.length}</span></button><ul>${taskList(t)}</ul>`;
   box.firstChild.onclick = () => { S.todosOpen = !S.todosOpen; todos(); };
 }
 function setRunning(r) {
@@ -308,10 +316,7 @@ function setRunning(r) {
   const b = $('#sendBtn'); b.classList.toggle('stop', r); b.innerHTML = r ? I.stop : I.send; b.ariaLabel = r ? 'Stop' : 'Send';
   syncSend();
   document.body.classList.toggle('running', r);
-  let w = $('#working');
-  if (r && !w) { w = h('div', 'working', '<span class="spin"></span><span>Working…</span>'); w.id = 'working'; log.after(w); }
-  if (!r) w?.remove();
-  todos();
+  todos(); strip();
 }
 function conn(on) {
   const c = $('#conn'); c.className = 'conn' + (on ? ' on' : '');
@@ -321,11 +326,45 @@ function emptyState() {
   const e = $('#empty');
   if (S.items.length) { e.hidden = true; return; }
   e.hidden = false;
-  e.innerHTML = `<span class="logo big"></span><h2>What should <span class="grad-text">dsh</span> do?</h2><div class="where">${S.cur ? 'Working in <code>' + esc(short(S.cur.cwd)) + '</code>' : 'A new session starts in <code>' + esc(short(S.cfg?.cwd)) + '</code>'}</div><div class="starters"></div>`;
+  const recent = S.cur ? [] : S.sessions.slice(0, 3);
+  e.innerHTML = `<h2>What should dsh do?</h2><div class="where">${S.cur ? 'Working in <code>' + esc(short(S.cur.cwd)) + '</code>' : 'A new session starts in <code>' + esc(short(S.cfg?.cwd)) + '</code>'}</div>
+    <div class="group"><h3>Start with</h3><div class="rows" id="starters"></div></div>
+    ${recent.length ? '<div class="group"><h3>Pick up where you left off</h3><div class="rows" id="recent"></div></div>' : ''}`;
   for (const t of ['Summarise this project and how to build it', 'What changed in git recently?', 'Find TODOs and rank them by importance', 'Check disk usage and the biggest folders here']) {
-    const b = h('button', null, `<span>${esc(t)}</span>${I.arrow}`); b.onclick = () => { $('#input').value = t; send(); }; e.querySelector('.starters').append(b);
+    const b = h('button', null, `<span class="rx r1">${esc(t)}</span>${I.arrow}`); b.onclick = () => { input.value = t; send(); }; $('#starters').append(b);
+  }
+  for (const s of recent) {
+    const b = h('button', null, `<span class="rx"><span class="r1" style="display:block">${esc(s.title)}</span><span class="r2" style="display:block">${esc(short(s.cwd))}</span></span><span class="rv">${ago(s.updated)}</span>`);
+    b.onclick = () => load(s.id).catch(er => toast(er.message)); $('#recent').append(b);
   }
 }
+const ago = t => { const m = Math.round((Date.now() - t) / 6e4); return m < 1 ? 'Now' : m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' d'; };
+
+/* ---------- run strip: every step of the current run, sized by its time ---------- */
+let stripQueued = false;
+function strip() { if (!stripQueued) { stripQueued = true; requestAnimationFrame(() => { stripQueued = false; drawStrip(); }); } }
+function drawStrip() {
+  const bar = $('#run'), segs = $('#runSegs');
+  const lt = S.items.map(x => x.kind).lastIndexOf('user');
+  const steps = (lt < 0 ? [] : S.items.slice(lt + 1)).filter(x => x.kind === 'think' || x.kind === 'tool' || x.kind === 'text');
+  bar.classList.toggle('on', !!steps.length && (S.running || !!S.cur));
+  if (!steps.length) { segs.textContent = ''; $('#runText').textContent = ''; return; }
+  const now = Date.now(), dur = x => x.ms ?? (x.t0 ? now - x.t0 : 1200);
+  while (segs.children.length > steps.length) segs.lastChild.remove();
+  steps.forEach((x, i) => {
+    let b = segs.children[i]; if (!b) { b = h('button'); segs.append(b); }
+    const st = x.kind === 'tool' ? x.status || 'run' : x.live ? 'run' : x.kind === 'think' ? 'think' : 'reply';
+    b.dataset.s = st; b.style.flex = `${Math.max(400, Math.min(dur(x), 60000))} 1 0`;
+    b.ariaLabel = x.kind === 'tool' ? `${tname(x.name)}, ${statusText(x)}` : x.kind === 'think' ? 'Thinking' : 'Reply';
+    b.onclick = () => { haptic(); stick = false; x.el.scrollIntoView({ block: 'center', behavior: 'smooth' }); if (x.kind === 'tool' && layout.mode === 'wide') { S.sel = x.id; S.itab = 'activity'; for (const t of S.items) if (t.kind === 'tool') t.el.classList.toggle('sel', t.id === S.sel); ui(); } };
+  });
+  const cur = steps[steps.length - 1], w = waitingTool(), tools = steps.filter(x => x.kind === 'tool').length;
+  const total = steps.reduce((a, x) => a + (x.ms ?? (x.t0 ? now - x.t0 : 0)), 0);
+  $('#runText').innerHTML = w ? `<b>Needs you</b> · ${esc(tname(w.name))}`
+    : S.running ? (cur.kind === 'think' && cur.live ? '<b>Thinking</b>' : cur.kind === 'tool' && cur.status === 'run' ? `<b>${esc(tname(cur.name))}</b>` : cur.live ? '<b>Writing</b>' : '<b>Working</b>') + (total ? ' · ' + fmtMs(Math.round(total / 100) * 100) : '')
+    : `${tools} tool call${tools === 1 ? '' : 's'}${total ? ' · ' + fmtMs(Math.round(total / 100) * 100) : ''}`;
+}
+setInterval(() => { if (S.running) strip(); }, 1000);
 
 /* ---------- composer ---------- */
 const input = $('#input');
@@ -376,7 +415,7 @@ async function patch(p) {
 }
 function userMenu(it) {
   if (it.pending) return;
-  sheet(`<h3>Message</h3><div class="list"><button data-a="copy">${I.copy}<span>Copy text</span></button><button data-a="edit">${I.pen}<span>Edit &amp; resend from here</span></button></div><p class="hint">Editing drops this message and everything after it.</p>`, {
+  sheet(`<h3>Message</h3><div class="rows"><button data-a="copy">${I.copy}<span>Copy text</span></button><button data-a="edit">${I.pen}<span>Edit and resend from here</span></button></div><p class="hint">Editing drops this message and everything after it.</p>`, {
     copy: () => { closeSheet(); copy(it.text); },
     edit: async () => {
       closeSheet(); if (S.running) return toast('Stop the run first');
@@ -390,6 +429,7 @@ function sharedText(t) {
 
 /* ---------- drawer & sheets ---------- */
 function drawer(on) { document.body.classList.toggle('drawer', on); $('#drawer').ariaHidden = !on; if (on) refreshSessions(); }
+document.querySelector('.brand').innerHTML = MARK + '<span>DSHA</span>';
 $('#menuBtn').innerHTML = I.menu; $('#menuBtn').onclick = () => { haptic(); drawer(true); };
 $('#moreBtn').innerHTML = I.more; $('#moreBtn').onclick = () => { haptic(); optionsSheet(); };
 $('#settingsBtn').innerHTML = I.gear; $('#settingsBtn').onclick = () => { drawer(false); settingsSheet(); };
@@ -408,7 +448,7 @@ const seg = (name, opts, cur) => `<div class="seg">${opts.map(([v, l]) => `<butt
 
 function modeSheet() {
   const cur = S.cur?.mode || S.cfg?.mode;
-  sheet(`<h3>Permission mode</h3>${seg('m', Object.entries(MODES).map(([k, v]) => [k, v[0]]), cur)}<p class="hint">${Object.values(MODES).map(v => `<b>${v[0]}</b> — ${v[1]}.`).join('<br>')}</p>${S.cur?.allow?.length ? `<h4>Always allowed here</h4><div class="list"><button data-a="reset">${I.x}<span>${esc(S.cur.allow.join(', '))}</span></button></div><p class="hint">Tap to reset.</p>` : ''}`, {
+  sheet(`<h3>Permission mode</h3>${seg('m', Object.entries(MODES).map(([k, v]) => [k, v[0]]), cur)}<p class="hint">${Object.values(MODES).map(v => `<b>${v[0]}</b>: ${v[1]}.`).join('<br>')}</p>${S.cur?.allow?.length ? `<h4>Always allowed here</h4><div class="rows"><button data-a="reset">${I.x}<span>${esc(S.cur.allow.map(tname).join(', '))}</span></button></div><p class="hint">Tap to reset.</p>` : ''}`, {
     m: el => { closeSheet(); if (S.cur) patch({ mode: el.dataset.v }); else api('PUT', '/api/config', { mode: el.dataset.v }).then(c => { S.cfg = c; header(); }); },
     reset: () => { closeSheet(); patch({ allow: [] }); },
   });
@@ -418,10 +458,10 @@ async function optionsSheet() {
   const s = S.cur; const tgt = s || S.cfg; if (!tgt) return settingsSheet();
   const models = S.models || [{ id: tgt.model }];
   const b = sheet(`<h3>${s ? 'Session' : 'Defaults'}</h3>
-    <h4>Model</h4>${seg('model', models.map(m => [m.id, m.id.replace('deepseek-', '')]), tgt.model)}
+    <h4>Model</h4>${seg('model', models.map(m => [m.id, modelName(m.id)]), tgt.model)}
     <h4>Thinking</h4>${seg('effort', [['off', 'Off'], ['low', 'Low'], ['high', 'High'], ['max', 'Max']], tgt.thinking === false ? 'off' : tgt.effort)}
     <p class="hint">Flash is fast and cheap; Pro is stronger on hard problems. Higher thinking spends more tokens before acting.</p>
-    ${s ? `<h4>Session</h4><div class="list">
+    ${s ? `<h4>Session</h4><div class="rows">
       <button data-a="rename">${I.pen}<span>Rename</span></button>
       <button data-a="cwd">${I.folder}<span>${esc(short(s.cwd))}</span></button>
       <button data-a="compact">${I.retry}<span>Compact history</span></button>
@@ -447,7 +487,7 @@ function transcript() {
 async function newSession() {
   const recents = [...new Set(S.sessions.map(x => x.cwd))].slice(0, 5);
   const start = S.cur?.cwd || S.cfg?.cwd;
-  sheet(`<h3>New session</h3><div class="path">${esc(short(start))}</div><div class="rowbtns"><button class="secondary" data-a="pick">${I.folder}Choose folder</button><button class="primary" data-a="go">Start</button></div>${recents.length ? `<h4>Recent folders</h4><div class="list">${recents.map((r, i) => `<button data-a="r" data-i="${i}">${I.folder}<span>${esc(short(r))}</span></button>`).join('')}</div>` : ''}`, {
+  sheet(`<h3>New session</h3><div class="path">${esc(short(start))}</div><div class="rowbtns"><button class="secondary" data-a="pick">${I.folder}Choose folder</button><button class="primary" data-a="go">Start</button></div>${recents.length ? `<h4>Recent folders</h4><div class="rows">${recents.map((r, i) => `<button data-a="r" data-i="${i}">${I.folder}<span>${esc(short(r))}</span></button>`).join('')}</div>` : ''}`, {
     go: () => create(start), r: el => create(recents[+el.dataset.i]), pick: () => pickDir(start, create),
   });
   async function create(cwd) {
@@ -461,7 +501,7 @@ async function pickDir(start, done) {
   const go = async p => {
     let r; try { r = await api('GET', `/api/fs?path=${encodeURIComponent(p)}${hidden ? '&hidden=1' : ''}`); } catch (e) { return toast(e.message); }
     cur = r.path;
-    sheet(`<h3>Choose folder</h3><div class="path">${esc(short(r.path))}</div><div class="rowbtns"><button class="secondary" data-a="hid">${hidden ? 'Hide' : 'Show'} hidden</button><button class="primary" data-a="use">Use this folder</button></div><h4>Folders</h4><div class="list">${r.path !== '/' ? `<button data-a="up">${I.up}<span>..</span></button>` : ''}${r.dirs.map((d, i) => `<button data-a="d" data-i="${i}">${I.folder}<span>${esc(d)}</span></button>`).join('') || '<div class="hint" style="padding:12px">No subfolders</div>'}</div>`, {
+    sheet(`<h3>Choose folder</h3><div class="path">${esc(short(r.path))}</div><div class="rowbtns"><button class="secondary" data-a="hid">${hidden ? 'Hide' : 'Show'} hidden</button><button class="primary" data-a="use">Use this folder</button></div><h4>Folders</h4><div class="rows">${r.path !== '/' ? `<button data-a="up">${I.up}<span>..</span></button>` : ''}${r.dirs.map((d, i) => `<button data-a="d" data-i="${i}">${I.folder}<span>${esc(d)}</span></button>`).join('') || '<div class="hint" style="padding:14px 16px;margin:0">No subfolders</div>'}</div>`, {
       up: () => go(r.parent), d: el => go(r.path.replace(/\/$/, '') + '/' + r.dirs[+el.dataset.i]),
       hid: () => { hidden = !hidden; go(cur); }, use: () => { closeSheet(); done(cur); },
     });
@@ -485,32 +525,32 @@ async function settingsSheet() {
     <p class="hint">Starts <code>dsh</code> in Termux and fetches its token. First time, Android asks to let DSHA run Termux commands.</p>
     <label class="field"><span>URL</span><input id="fUrl" value="${esc(c.url)}" autocapitalize="off" spellcheck="false"></label>
     <label class="field"><span>Token (<code>dsh token</code>)</span><input id="fTok" type="password" value="${esc(c.token)}" autocapitalize="off" spellcheck="false"></label>
-    <button class="secondary wide" data-a="save">Save &amp; reconnect</button>
+    <button class="secondary wide" data-a="save">Save and reconnect</button>
     <div class="err-text" id="pairErr"></div>
     <h4>DeepSeek API key</h4>
-    <div class="kv"><span>Status</span><b>${key ? 'Set on backend' : 'Not set'}</b></div><div class="kv"><span>Balance</span><b id="bal">…</b></div>
-    <label class="field" style="margin-top:10px"><span>Replace key (stored only on the backend, ~/.config/deepseek/key)</span><input id="fKey" type="password" placeholder="sk-…" autocapitalize="off" spellcheck="false"></label>
-    <button class="secondary wide" data-a="key">Verify &amp; save key</button>
+    <div class="kvs"><div class="kv"><span>Status</span><b>${key ? 'Set on backend' : 'Not set'}</b></div><div class="kv"><span>Balance</span><b id="bal">…</b></div></div>
+    <label class="field" style="margin-top:14px"><span>Replace key</span><input id="fKey" type="password" placeholder="sk-…" autocapitalize="off" spellcheck="false"></label>
+    <button class="secondary wide" data-a="key">Verify and save key</button><p class="hint">Stored only on the backend, in <code>~/.config/deepseek/key</code>.</p>
     <h4>Defaults for new sessions</h4>
-    <div class="list"><button data-a="defs">${I.gear}<span>${esc(S.cfg ? `${S.cfg.model} · ${S.cfg.thinking === false ? 'no thinking' : S.cfg.effort} · ${S.cfg.mode}` : '—')}</span></button><button data-a="dcwd">${I.folder}<span>${esc(short(S.cfg?.cwd || ''))}</span></button></div>
+    <div class="rows"><button data-a="defs">${I.gear}<span>${esc(S.cfg ? `${modelName(S.cfg.model)} · ${S.cfg.thinking === false ? 'no thinking' : S.cfg.effort + ' thinking'} · ${MODES[S.cfg.mode]?.[0] || S.cfg.mode}` : 'Unknown')}</span></button><button data-a="dcwd">${I.folder}<span>${esc(short(S.cfg?.cwd || ''))}</span></button></div>
     ${N ? `<h4>Notifications</h4><button class="secondary wide" data-a="notif">Allow notifications</button><p class="hint">Get notified when a run finishes or needs approval while DSHA is in the background.</p>` : ''}
-    <h4>About</h4><div class="kv"><span>DSHA</span><b>${esc(c.version)}</b></div><div class="kv"><span>dsh</span><b>${esc(S.health?.version || '—')}</b></div><div class="list" style="margin-top:10px"><button data-a="lic">${I.file}<span>Third-party licences</span></button></div>`, {
+    <h4>About</h4><div class="kvs"><div class="kv"><span>DSHA</span><b>${esc(c.version)}</b></div><div class="kv"><span>dsh</span><b>${esc(S.health?.version || 'Not connected')}</b></div></div><div class="rows" style="margin-top:10px"><button data-a="lic">${I.file}<span>Third-party licences</span></button></div>`, {
     pair: el => { el.disabled = true; $('#pairErr').textContent = ''; pairTermux((ok, err) => { el.disabled = false; if (ok) { toast('Paired'); closeSheet(); boot(); } else $('#pairErr').textContent = err; }); },
     save: () => { saveSettings($('#fUrl').value.trim().replace(/\/+$/, ''), $('#fTok').value.trim()); closeSheet(); boot(); },
     key: async el => { const k = $('#fKey').value.trim(); if (!k) return; el.disabled = true; try { await api('PUT', '/api/key', { key: k }); toast('Key saved'); S.health = await api('GET', '/api/health'); settingsSheet(); } catch (e) { toast(e.message); el.disabled = false; } },
     defs: () => { const s = S.cur; S.cur = null; optionsSheet().finally(() => { S.cur = s; }); },
     dcwd: () => pickDir(S.cfg?.cwd, async d => { S.cfg = await api('PUT', '/api/config', { cwd: d }); toast('Default folder set'); }),
     notif: () => N.askNotifications(),
-    lic: async () => { const t = await fetch('vendor/LICENSES.txt').then(r => r.text()); sheet(`<h3>Licences</h3><pre style="white-space:pre-wrap;font-size:11px;color:var(--dim)">${esc(t)}</pre>`); },
+    lic: async () => { const t = await fetch('vendor/LICENSES.txt').then(r => r.text()); sheet(`<h3>Licences</h3><pre style="white-space:pre-wrap;font-size:11px;color:var(--muted)">${esc(t)}</pre>`); },
   });
-  try { const r = await api('GET', '/api/balance'); bal = (r.balance_infos || []).map(x => `${x.total_balance} ${x.currency}`).join(', ') || '—'; } catch (e) { bal = '—'; }
+  try { const r = await api('GET', '/api/balance'); bal = (r.balance_infos || []).map(x => `${x.total_balance} ${x.currency}`).join(', ') || 'Unknown'; } catch (e) { bal = 'Unavailable'; }
   const be = b.querySelector('#bal'); if (be) be.textContent = bal;
 }
 
 function onboarding(err) {
   log.textContent = ''; S.items = [];
   const e = $('#empty'); e.hidden = false;
-  e.innerHTML = `<div class="onboard"><span class="logo big"></span><h2>Connect to dsh</h2><p>DSHA is the interface. The agent, dsh, runs in Termux on this phone, with your files and shell.</p>
+  e.innerHTML = `<div class="onboard">${MARK.replace('class="mark"', 'class="mark big"')}<h2>Connect to dsh</h2><p>DSHA is the interface. The agent, dsh, runs in Termux on this phone, with your files and shell.</p>
   <button class="primary wide" id="obPair">${I.link}Pair with Termux</button>
   <div class="err-text" id="obErr">${esc(err || '')}</div>
   <ol><li>dsh lives in <code>~/dev/dsha/server</code>; the <code>dsh</code> command starts it.</li><li>Pairing runs <code>dsh start</code> in Termux and reads the token. Termux needs <code>allow-external-apps = true</code> in <code>~/.termux/termux.properties</code>.</li><li>Or open settings and paste the URL and the output of <code>dsh token</code>.</li></ol>
@@ -588,7 +628,7 @@ function inspector() {
   const sig = S.itab + nt + !!waitingTool();
   if (nav.dataset.sig !== sig) {
     nav.dataset.sig = sig;
-    nav.innerHTML = tabs.map(([k, ic, l]) => `<button role="tab" data-t="${k}" class="${S.itab === k ? 'on' : ''}">${l}${k === 'tasks' && nt ? `<span class="badge">${nt}</span>` : ''}${k === 'activity' && waitingTool() ? '<span class="badge">!</span>' : ''}</button>`).join('');
+    nav.innerHTML = tabs.map(([k, ic, l]) => `<button role="tab" data-t="${k}" class="${S.itab === k ? 'on' : ''}">${l}${k === 'tasks' && nt ? `<span class="count">${nt}</span>` : ''}${k === 'activity' && waitingTool() ? '<span class="count need">Needs you</span>' : ''}</button>`).join('');
     nav.querySelectorAll('button').forEach(b => b.onclick = () => { haptic(); S.itab = b.dataset.t; nav.dataset.sig = ''; inspector(); });
   }
   const box = $('#ibody'), keepScroll = box.scrollTop, atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
@@ -596,12 +636,12 @@ function inspector() {
   box.dataset.tab = S.itab;
   if (S.itab === 'activity') {
     const th = liveThink(), t = focusTool(), live = S.running && !S.sel;
-    if (!t && !th) { box.innerHTML = `<div class="iempty">Tool calls and their output<br>appear here.<span class="label">Tap a tool card to pin it</span></div>`; return; }
-    box.innerHTML = `<div class="ihead"><h3>${th ? 'Thinking' : esc((t.name || '').replace('_', ' '))}</h3>${S.sel ? '<button class="pill" id="follow">Follow live</button>' : live ? '<span class="pill live">Live</span>' : ''}</div>`
-      + (th ? `<div class="icard"><span class="label">Reasoning</span><div class="ithink">${esc(tail(th.text, 8000))}</div></div>` : '')
-      + (t ? `<div class="icard term"><div class="cmdline">${esc(t.name === 'bash' ? '$ ' + t.args?.command : t.summary)}</div><pre class="ipre">${esc(t.content ?? t.output ?? '') || (t.status === 'waiting' ? 'Waiting for your approval…' : 'Running…')}</pre></div>`
+    if (!t && !th) { box.innerHTML = `<div class="iempty">Tool calls and their output appear here.<br>Tap a tool card to pin it.</div>`; return; }
+    box.innerHTML = `<div class="ihead"><h2>${th ? 'Thinking' : esc(tname(t.name || ''))}</h2>${S.sel ? '<button class="pill" id="follow">Follow live</button>' : live ? '<span class="pill"><span class="livedot"></span>Live</span>' : ''}</div>`
+      + (th ? `<div class="panel"><h3>Reasoning</h3><div class="ithink">${esc(tail(th.text, 8000))}</div></div>` : '')
+      + (t ? `<div class="panel"><div class="cmdline">${esc(t.name === 'bash' ? '$ ' + t.args?.command : t.summary)}</div><pre class="ipre">${esc(t.content ?? t.output ?? '') || (t.status === 'waiting' ? 'Waiting for your approval…' : 'Running…')}</pre></div>`
         + (t.status === 'waiting' ? `<div class="rowbtns"><button class="secondary" data-d="deny">Deny</button><button class="secondary" data-d="always">Always</button><button class="primary" data-d="allow">Allow</button></div>` : '')
-        + (t.ms != null ? `<div class="label" style="margin-top:8px">${t.status} · ${fmtMs(t.ms)}</div>` : '') : '');
+        + `<p class="hint">${esc(statusText(t))}</p>` : '');
     box.querySelector('#follow')?.addEventListener('click', () => { S.sel = null; for (const x of S.items) if (x.kind === 'tool') x.el.classList.remove('sel'); inspector(); });
     box.querySelectorAll('[data-d]').forEach(b => b.onclick = () => decide(t, b.dataset.d));
     box.scrollTop = live || atEnd ? box.scrollHeight : keepScroll;
@@ -609,7 +649,7 @@ function inspector() {
   }
   if (S.itab === 'tasks') {
     const t = S.todos || [], done = t.filter(x => x.status === 'completed').length;
-    box.innerHTML = t.length ? `<div class="ihead"><h3>Tasks</h3><span class="pill">${done}/${t.length}</span></div><div class="bar" style="margin-bottom:14px"><i style="width:${100 * done / t.length}%"></i></div><ul class="ilist" style="padding:0">${t.map(x => `<li class="${x.status}"><i>${x.status === 'completed' ? '✓' : x.status === 'in_progress' ? '▸' : '·'}</i>${esc(x.content)}</li>`).join('')}</ul>` : `<div class="iempty">No task list yet.<span class="label">dsh writes one for multi-step work</span></div>`;
+    box.innerHTML = t.length ? `<div class="ihead"><h2>Tasks</h2><span class="pill">${done} of ${t.length} done</span></div><div class="panel"><div class="plan" style="margin-top:0"><i style="width:${100 * done / t.length}%"></i></div><ul class="tasks" style="padding:6px 0 0">${taskList(t)}</ul></div>` : `<div class="iempty">No task list yet.<br>dsh writes one for multi-step work.</div>`;
     return;
   }
   if (S.itab === 'stats') {
@@ -618,13 +658,15 @@ function inspector() {
     const k = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
     const tools = S.items.filter(x => x.kind === 'tool'), files = new Map();
     for (const t of tools) if (t.args?.path && /file|list_dir/.test(t.name)) files.set(t.args.path, t.name === 'read_file' || t.name === 'list_dir' ? (files.get(t.args.path) || 'read') : t.name === 'write_file' ? 'write' : 'edit');
-    box.innerHTML = `<div class="ihead"><h3>${esc(s.title)}</h3></div>
-      <div class="stats"><div class="stat"><span class="label">Context</span><b>${k(u.lastPrompt || 0)}</b><div class="bar" style="margin-top:8px"><i style="width:${Math.min(100, 100 * (u.lastPrompt || 0) / 1048576)}%"></i></div><small>of 1M tokens</small></div>
-      <div class="stat"><span class="label">Spent</span><b>$${(u.costPeak || 0).toFixed(4)}</b><small>off-peak $${(u.costOff || 0).toFixed(4)}</small></div>
-      <div class="stat"><span class="label">Cache hits</span><b>${hitPct}%</b><small>${k(u.hit || 0)} of ${k(inTok)} in</small></div>
-      <div class="stat"><span class="label">Tool calls</span><b>${tools.length}</b><small>${tools.filter(t => t.status === 'fail').length} failed · ${tools.filter(t => t.status === 'denied').length} denied</small></div></div>
-      <div class="icard"><span class="label">Session</span><div style="padding:4px 14px 8px"><div class="kv"><span>Model</span><b>${esc(s.model)}</b></div><div class="kv"><span>Thinking</span><b>${s.thinking === false ? 'off' : esc(s.effort)}</b></div><div class="kv"><span>Mode</span><b>${esc(s.mode)}</b></div><div class="kv" style="border:0"><span>Folder</span><b>${esc(short(s.cwd))}</b></div></div></div>
-      ${files.size ? `<div class="icard"><span class="label">Files touched</span><ul class="files">${[...files].map(([p, m]) => `<li><span>${esc(p)}</span><em class="${m[0]}">${m}</em></li>`).join('')}</ul></div>` : ''}`;
+    const ctx = u.lastPrompt || 0;
+    box.innerHTML = `<div class="ihead"><h2>${esc(s.title)}</h2></div>
+      <div class="panel"><h3>Context window</h3><div class="kpi" style="padding:0"><b style="margin:0">${k(ctx)}</b></div><div class="plan"><i style="width:${Math.min(100, 100 * ctx / 1048576)}%"></i></div><div class="planends"><span>${k(ctx)} used</span><span>1M</span></div></div>
+      <div class="kpis"><div class="kpi"><span>Spent</span><b>$${(u.costPeak || 0).toFixed(4)}</b><small>$${(u.costOff || 0).toFixed(4)} off-peak</small></div>
+      <div class="kpi"><span>Cache hits</span><b>${hitPct}%</b><small>${k(u.hit || 0)} of ${k(inTok)} in</small></div>
+      <div class="kpi"><span>Tool calls</span><b>${tools.length}</b><small>${tools.filter(t => t.status === 'fail').length} failed · ${tools.filter(t => t.status === 'denied').length} denied</small></div>
+      <div class="kpi"><span>Output</span><b>${k(u.out || 0)}</b><small>tokens written</small></div></div>
+      <div class="panel"><h3>Session</h3><div class="kv"><span>Model</span><b>${esc(modelName(s.model))}</b></div><div class="kv"><span>Thinking</span><b>${s.thinking === false ? 'Off' : esc(cap(s.effort))}</b></div><div class="kv"><span>Mode</span><b>${esc(MODES[s.mode]?.[0] || s.mode)}</b></div><div class="kv"><span>Folder</span><b>${esc(short(s.cwd))}</b></div></div>
+      ${files.size ? `<div class="panel"><h3>Files touched</h3><ul class="files">${[...files].map(([p, m]) => `<li><span>${esc(p)}</span><em>${m === 'read' ? 'Read' : m === 'write' ? 'Written' : 'Edited'}</em></li>`).join('')}</ul></div>` : ''}`;
   }
 }
 
@@ -634,15 +676,15 @@ function deckLive() {
     const cmd = w.name === 'bash' ? w.args?.command : w.name === 'edit_file' ? `${w.args?.path}\n− ${w.args?.old_string}\n+ ${w.args?.new_string}` : w.summary;
     if (box.dataset.k !== 'ask' + w.id) {
       box.dataset.k = 'ask' + w.id;
-      box.innerHTML = `<div class="dl-head"><span class="label">Needs approval · ${esc(w.name.replace('_', ' '))}</span></div><div class="dl-ask"><p>${esc(askText(w))}</p><div class="cmd">${esc(cmd)}</div><div class="row"><button class="deny">Deny</button><button class="always">Always</button><button class="allow">Allow</button></div></div>`;
+      box.innerHTML = `<div class="dl-head"><h3>${esc(askText(w))}</h3><span class="pill">${esc(tname(w.name))}</span></div><div class="dl-ask"><div class="cmd">${esc(cmd)}</div><div class="row"><button class="deny">Deny</button><button class="always">Always</button><button class="allow">Allow</button></div></div>`;
       for (const d of ['allow', 'always', 'deny']) box.querySelector('.' + d).onclick = () => decide(w, d);
     }
     return;
   }
   if (S.running) {
-    const what = th ? ['Thinking', th.text] : t && t.status === 'run' ? [t.name.replace('_', ' ') + ' · ' + String(t.summary || '').slice(0, 60), t.output || ''] : t ? [t.name.replace('_', ' ') + ' · done', t.content || ''] : ['Starting', ''];
-    if (box.dataset.k !== 'live') { box.dataset.k = 'live'; box.innerHTML = `<div class="dl-head"><span class="spin"></span><span class="label"></span><button class="secondary" style="height:36px;padding:0 14px" id="dlStop">Stop</button></div><div class="dl-body"><pre></pre></div>`; box.querySelector('#dlStop').onclick = stop; }
-    box.querySelector('.label').textContent = what[0];
+    const what = th ? ['Thinking', th.text] : t && t.status === 'run' ? [tname(t.name), t.output || t.summary || ''] : t ? [tname(t.name) + ' · ' + statusText(t), t.content || ''] : ['Starting', ''];
+    if (box.dataset.k !== 'live') { box.dataset.k = 'live'; box.innerHTML = `<div class="dl-head"><span class="livedot"></span><h3></h3><button class="secondary" style="height:36px;padding:0 16px" id="dlStop">Stop</button></div><div class="dl-body"><pre></pre></div>`; box.querySelector('#dlStop').onclick = stop; }
+    box.querySelector('h3').textContent = what[0];
     box.querySelector('pre').textContent = tail(what[1], 4000);
     const b = box.querySelector('.dl-body'); b.scrollTop = b.scrollHeight;
     return;
@@ -650,8 +692,8 @@ function deckLive() {
   const idle = 'idle' + (S.cur?.id || '') + (S.cur?.mode || S.cfg?.mode);
   if (box.dataset.k === idle) return;
   box.dataset.k = idle;
-  const acts = [['cont', I.retry, 'Continue', 'Keep going'], ['mode', I.fold, 'Mode', MODES[S.cur?.mode || S.cfg?.mode || 'ask'][0]], ['compact', I.chart, 'Compact', 'Free context'], ['new', I.plus, 'New session', 'Pick a folder']];
-  box.innerHTML = `<div class="dl-head"><span class="label">Flex mode · quick actions</span></div><div class="quick">${acts.map(([k, ic, l, sub]) => `<button data-q="${k}">${ic}<span>${l}</span><small class="label">${esc(sub)}</small></button>`).join('')}</div>`;
+  const acts = [['cont', I.retry, 'Continue', 'Ask dsh to keep going'], ['mode', I.fold, 'Permission mode', MODES[S.cur?.mode || S.cfg?.mode || 'ask'][0]], ['compact', I.chart, 'Compact history', 'Free up context'], ['new', I.plus, 'New session', 'Pick a folder']];
+  box.innerHTML = `<div class="dl-head"><h3>Quick actions</h3></div><div class="dl-body" style="padding:0"><div class="rows">${acts.map(([k, ic, l, sub]) => `<button data-q="${k}">${ic}<span class="rx"><span class="r1" style="display:block">${l}</span><span class="r2" style="display:block">${esc(sub)}</span></span></button>`).join('')}</div></div>`;
   box.querySelectorAll('[data-q]').forEach(b => b.onclick = () => { haptic(); ({ cont: () => { input.value = 'Continue.'; send(); }, mode: modeSheet, compact, new: newSession })[b.dataset.q](); });
 }
 

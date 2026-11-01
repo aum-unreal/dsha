@@ -82,7 +82,7 @@ const stat = http.createServer((req, res) => {
     assert.equal(await page.locator('.md h2').textContent(), 'What found'.replace('What', 'What I'));
     assert.ok(await page.locator('.md pre .hljs-built_in, .md pre code').count());
     assert.match(await page.locator('.think').first().textContent(), /Thought|Thoughts/);
-    assert.match(await page.locator('#meter').textContent(), /ctx 5\.2k/);
+    assert.match(await page.locator('#meter').textContent(), /5\.2k context/);
     assert.equal(await page.locator('#title').textContent(), 'What is in this project?');
     await page.screenshot({ path: shot('reply'), fullPage: false });
 
@@ -105,15 +105,15 @@ const stat = http.createServer((req, res) => {
     await page.getByRole('button', { name: 'Auto' }).click(); await page.waitForTimeout(200);
     assert.equal(await page.locator('#modeChip').textContent(), 'Auto');
     await page.getByRole('button', { name: 'Session options' }).click();
-    await page.locator('#sheet .seg button', { hasText: 'v4-pro' }).click(); await page.waitForTimeout(200);
+    await page.locator('#sheet .seg button', { hasText: 'V4 Pro' }).click(); await page.waitForTimeout(200);
     await page.screenshot({ path: shot('options') });
-    assert.match(await page.locator('#meter').textContent(), /v4-pro/);
+    assert.match(await page.locator('#meter').textContent(), /V4 Pro/);
     await page.locator('#scrim').click({ position: { x: 200, y: 60 } });
     await page.locator('#input').fill('/co');
     await page.locator('#slash').waitFor();
     await page.screenshot({ path: shot('slash') });
     await page.locator('#input').fill('');
-    await page.locator('#cwdChip').click(); await page.locator('#sheet .list button', { hasText: 'src' }).click();
+    await page.locator('#cwdChip').click(); await page.locator('#sheet .rows button', { hasText: 'src' }).click();
     await page.getByRole('button', { name: 'Use this folder' }).click(); await page.waitForTimeout(200);
     assert.match(await page.locator('#cwdChip').textContent(), /project\/src$/);
     await page.getByRole('button', { name: 'Sessions' }).click(); await page.getByRole('button', { name: 'Settings' }).click();
@@ -137,7 +137,7 @@ const stat = http.createServer((req, res) => {
     assert.equal(await page.locator('.tool.open').count(), openBefore); // wide mode pins to the inspector instead of expanding inline
     await page.screenshot({ path: shot('unfolded') });
     await page.locator('#itabs [data-t=stats]').click();
-    await page.locator('.stat', { hasText: 'Cache hits' }).waitFor();
+    await page.locator('.kpi', { hasText: 'Cache hits' }).waitFor();
     assert.match(await page.locator('.files').textContent(), /README\.md/);
     await page.screenshot({ path: shot('unfolded-stats') });
     await page.locator('#itabs button', { hasText: 'Activity' }).click();
