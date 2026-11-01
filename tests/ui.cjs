@@ -211,6 +211,21 @@ const stat = http.createServer((req, res) => {
     assert.ok(await page.evaluate(() => !document.body.classList.contains('wide') && !document.body.classList.contains('tabletop')));
     assert.ok(await page.locator('#menuBtn').isVisible());
     await page.screenshot({ path: shot('cover') });
+
+    // Long run on the narrow screen: the run strip folds early steps and never spills under its label.
+    script = [...Array.from({ length: 45 }, (_, i) => [delta({ tool_calls: [{ index: 0, id: 'L' + i, type: 'function', function: { name: 'read_file', arguments: '{"path":"../README.md"}' } }] })]), [delta({ content: 'Read it 45 times.' })]];
+    await page.locator('#input').fill('Read the README many times');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await page.locator('.md', { hasText: 'Read it 45 times.' }).waitFor({ timeout: 60000 }); await page.waitForTimeout(300);
+    const strip = await page.evaluate(() => { const g = document.querySelector('#runSegs'), t = document.querySelector('#runText'); return { n: g.children.length, over: g.scrollWidth - g.clientWidth, gap: t.getBoundingClientRect().left - g.getBoundingClientRect().right, fold: !!g.querySelector('[aria-label$="earlier steps"]') }; });
+    assert.ok(strip.fold && strip.over <= 1 && strip.gap >= 0, 'run strip fits: ' + JSON.stringify(strip));
+    await page.screenshot({ path: shot('long-run') });
+
+    // Usage sheet from the meter, with the account balance.
+    await page.locator('#meter').click();
+    await page.locator('#sheet .kpi', { hasText: 'Balance' }).filter({ hasText: '5.73 USD' }).waitFor();
+    await page.waitForTimeout(250); await page.screenshot({ path: shot('usage') });
+    await page.locator('#scrim').click({ position: { x: 180, y: 20 } }); await page.waitForTimeout(250);
     assert.deepEqual(errors, []);
     console.log('ui ok');
   } finally {

@@ -230,7 +230,7 @@ function apply(ev) {
     case 'session': if (S.cur) { Object.assign(S.cur, ev.patch); header(); meter(); } break;
     case 'compacted': load(S.cur.id); break;
     case 'run_end':
-      closeLive(); setRunning(false); addFoot(); refreshSessions();
+      closeLive(); setRunning(false); addFoot(); refreshSessions(); refreshBalance(true);
       if (!visible() && ev.reason !== 'stopped') { const t = [...S.items].reverse().find(x => x.kind === 'text'); N?.notify(S.cur?.title || 'dsh', t ? t.text.slice(0, 300) : 'Finished'); }
       break;
   }
@@ -369,19 +369,32 @@ function drawStrip() {
   bar.classList.toggle('on', !!steps.length && (S.running || !!S.cur));
   if (!steps.length) { segs.textContent = ''; $('#runText').textContent = ''; return; }
   const now = Date.now(), dur = x => x.ms ?? (x.t0 ? now - x.t0 : 1200);
-  while (segs.children.length > steps.length) segs.lastChild.remove();
-  steps.forEach((x, i) => {
-    let b = segs.children[i]; if (!b) { b = h('button'); segs.append(b); }
-    const st = x.kind === 'tool' ? x.status || 'run' : x.live ? 'run' : x.kind === 'think' ? 'think' : 'reply';
-    b.dataset.s = st; b.style.flex = `${Math.max(400, Math.min(dur(x), 60000))} 1 0`;
-    b.ariaLabel = x.kind === 'tool' ? `${tname(x.name)}, ${statusText(x)}` : x.kind === 'think' ? 'Thinking' : 'Reply';
-    b.onclick = () => { haptic(); stick = false; x.el.scrollIntoView({ block: 'center', behavior: 'smooth' }); if (x.kind === 'tool' && layout.mode === 'wide') { if (chatFull) setChatFull(false); S.sel = x.id; S.itab = 'activity'; for (const t of S.items) if (t.kind === 'tool') t.el.classList.toggle('sel', t.id === S.sel); ui(); } };
-  });
   const cur = steps[steps.length - 1], w = waitingTool(), tools = steps.filter(x => x.kind === 'tool').length;
   const total = steps.reduce((a, x) => a + (x.ms ?? (x.t0 ? now - x.t0 : 0)), 0);
   $('#runText').innerHTML = w ? `<b>Needs you</b> · ${esc(tname(w.name))}`
     : S.running ? (cur.kind === 'think' && cur.live ? '<b>Thinking</b>' : cur.kind === 'tool' && cur.status === 'run' ? `<b>${esc(tname(cur.name))}</b>` : cur.live ? '<b>Writing</b>' : '<b>Working</b>') + (liveTps() ? ` · ~${liveTps()} tok/s` : total ? ' · ' + fmtMs(Math.round(total / 100) * 100) : '')
     : `${tools} tool call${tools === 1 ? '' : 's'}${total ? ' · ' + fmtMs(Math.round(total / 100) * 100) : ''}`;
+  // A segment needs 6px plus a 2px gap; 9px leaves slack. On a long run the newest steps keep their own segment and
+  // everything before them folds into one, so the strip never spills under its label.
+  const fit = Math.max(8, Math.floor((segs.clientWidth || 240) / 9));
+  let shown = steps;
+  if (steps.length > fit) {
+    const early = steps.slice(0, steps.length - fit + 1);
+    shown = [{ fold: early, el: early[0].el, ms: early.reduce((a, x) => a + dur(x), 0) }, ...steps.slice(-(fit - 1))];
+  }
+  while (segs.children.length > shown.length) segs.lastChild.remove();
+  shown.forEach((x, i) => {
+    let b = segs.children[i]; if (!b) { b = h('button'); segs.append(b); }
+    if (x.fold) {
+      b.dataset.s = x.fold.some(y => y.status === 'fail') ? 'fail' : 'ok'; b.style.flex = `${Math.max(400, Math.min(x.ms, 60000))} 1 0`;
+      b.ariaLabel = `${x.fold.length} earlier steps`; b.onclick = () => { haptic(); stick = false; x.el.scrollIntoView({ block: 'start', behavior: 'smooth' }); };
+      return;
+    }
+    const st = x.kind === 'tool' ? x.status || 'run' : x.live ? 'run' : x.kind === 'think' ? 'think' : 'reply';
+    b.dataset.s = st; b.style.flex = `${Math.max(400, Math.min(dur(x), 60000))} 1 0`;
+    b.ariaLabel = x.kind === 'tool' ? `${tname(x.name)}, ${statusText(x)}` : x.kind === 'think' ? 'Thinking' : 'Reply';
+    b.onclick = () => { haptic(); stick = false; x.el.scrollIntoView({ block: 'center', behavior: 'smooth' }); if (x.kind === 'tool' && layout.mode === 'wide') { if (chatFull) setChatFull(false); S.sel = x.id; S.itab = 'activity'; for (const t of S.items) if (t.kind === 'tool') t.el.classList.toggle('sel', t.id === S.sel); ui(); } };
+  });
 }
 setInterval(() => { if (S.running) strip(); }, 1000);
 
@@ -447,7 +460,7 @@ function sharedText(t) {
 }
 
 /* ---------- drawer & sheets ---------- */
-function drawer(on) { document.body.classList.toggle('drawer', on); $('#drawer').ariaHidden = !on; if (on) refreshSessions(); }
+function drawer(on) { document.body.classList.toggle('drawer', on); $('#drawer').ariaHidden = !on; if (on) { refreshSessions(); refreshBalance(); } }
 document.querySelector('.brand').innerHTML = MARK + '<span>DSHA</span>';
 $('#menuBtn').innerHTML = I.menu; $('#menuBtn').onclick = () => { haptic(); drawer(true); };
 $('#moreBtn').innerHTML = I.more; $('#moreBtn').onclick = () => { haptic(); optionsSheet(); };
@@ -456,6 +469,8 @@ $('#settingsBtn').innerHTML = I.gear; $('#settingsBtn').onclick = () => { drawer
 $('#newBtn').innerHTML = I.plus + 'New session'; $('#newBtn').onclick = () => { drawer(false); newSession(); };
 $('#scrim').onclick = () => { drawer(false); closeSheet(); };
 $('#modeChip').onclick = () => { haptic(); modeSheet(); };
+$('#meter').onclick = usageSheet;
+$('#balBtn').onclick = () => { drawer(false); usageSheet(); };
 $('#cwdChip').onclick = () => S.cur && pickDir(S.cur.cwd, d => patch({ cwd: d }));
 
 function sheet(html, actions = {}) {
@@ -538,7 +553,7 @@ function pairTermux(cb) {
 
 async function settingsSheet() {
   const c = settings();
-  let bal = '', key = S.health?.hasKey;
+  const key = S.health?.hasKey;
   const b = sheet(`<h3>Settings</h3>
     <h4>Backend</h4>
     <button class="primary wide" data-a="pair">${I.link}Pair with dsh in Termux</button>
@@ -549,7 +564,7 @@ async function settingsSheet() {
     <div class="err-text" id="pairErr"></div>
     <h4>Appearance</h4>${seg('theme', [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']], local.get('theme') || 'system')}
     <h4>DeepSeek API key</h4>
-    <div class="kvs"><div class="kv"><span>Status</span><b>${key ? 'Set on backend' : 'Not set'}</b></div><div class="kv"><span>Balance</span><b id="bal">…</b></div></div>
+    <div class="kvs"><div class="kv"><span>Status</span><b>${key ? 'Set on backend' : 'Not set'}</b></div><div class="kv"><span>Balance</span><b id="bal">${esc(S.balance || '…')}</b></div></div>
     <label class="field" style="margin-top:14px"><span>Replace key</span><input id="fKey" type="password" placeholder="sk-…" autocapitalize="off" spellcheck="false"></label>
     <button class="secondary wide" data-a="key">Verify and save key</button><p class="hint">Stored only on the backend, in <code>~/.config/deepseek/key</code>.</p>
     <h4>Defaults for new sessions</h4>
@@ -565,8 +580,7 @@ async function settingsSheet() {
     notif: () => N.askNotifications(),
     lic: async () => { const t = await fetch('vendor/LICENSES.txt').then(r => r.text()); sheet(`<h3>Licences</h3><pre style="white-space:pre-wrap;font-size:11px;color:var(--muted)">${esc(t)}</pre>`); },
   });
-  try { const r = await api('GET', '/api/balance'); bal = (r.balance_infos || []).map(x => `${x.total_balance} ${x.currency}`).join(', ') || 'Unknown'; } catch (e) { bal = 'Unavailable'; }
-  const be = b.querySelector('#bal'); if (be) be.textContent = bal;
+  refreshBalance(true);
 }
 
 function onboarding(err) {
@@ -589,7 +603,7 @@ async function boot() {
   } catch (e) {
     return onboarding(settings().token ? e.message : '');
   }
-  conn(true); header();
+  conn(true); header(); refreshBalance(true);
   api('GET', '/api/models').then(r => { S.models = r.data; }).catch(() => {});
   await refreshSessions();
   const lastId = local.get('last');
@@ -691,22 +705,39 @@ function inspector() {
     box.innerHTML = t.length ? `<div class="ihead"><h2>Tasks</h2><span class="pill">${done} of ${t.length} done</span></div><div class="panel"><div class="plan" style="margin-top:0"><i style="width:${100 * done / t.length}%"></i></div><ul class="tasks" style="padding:6px 0 0">${taskList(t)}</ul></div>` : `<div class="iempty">No task list yet.<br>dsh writes one for multi-step work.</div>`;
     return;
   }
-  if (S.itab === 'stats') {
-    const s = S.cur; if (!s) { box.innerHTML = '<div class="iempty">No session open.</div>'; return; }
-    const u = s.usage || {}, inTok = (u.hit || 0) + (u.miss || 0), hitPct = inTok ? Math.round(100 * (u.hit || 0) / inTok) : 0;
-    const k = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
-    const tools = S.items.filter(x => x.kind === 'tool'), files = new Map();
-    for (const t of tools) if (t.args?.path && /file|list_dir/.test(t.name)) files.set(t.args.path, t.name === 'read_file' || t.name === 'list_dir' ? (files.get(t.args.path) || 'read') : t.name === 'write_file' ? 'write' : 'edit');
-    const ctx = u.lastPrompt || 0;
-    box.innerHTML = `<div class="ihead"><h2>${esc(s.title)}</h2></div>
-      <div class="panel"><h3>Context window</h3><div class="kpi" style="padding:0"><b style="margin:0">${k(ctx)}</b></div><div class="plan"><i style="width:${Math.min(100, 100 * ctx / 1048576)}%"></i></div><div class="planends"><span>${k(ctx)} used</span><span>1M</span></div></div>
-      <div class="kpis"><div class="kpi"><span>Spent</span><b>$${(u.costPeak || 0).toFixed(4)}</b><small>$${(u.costOff || 0).toFixed(4)} off-peak</small></div>
-      <div class="kpi"><span>Cache hits</span><b>${hitPct}%</b><small>${k(u.hit || 0)} of ${k(inTok)} in</small></div>
-      <div class="kpi"><span>Tool calls</span><b>${tools.length}</b><small>${tools.filter(t => t.status === 'fail').length} failed · ${tools.filter(t => t.status === 'denied').length} denied</small></div>
-      <div class="kpi"><span>Speed</span><b>${u.tps ? u.tps + ' tok/s' : 'None yet'}</b><small>${u.genMs ? `${Math.round(u.genOut / (u.genMs / 1000))} tok/s average · ` : ''}${k(u.out || 0)} out</small></div></div>
-      <div class="panel"><h3>Session</h3><div class="kv"><span>Model</span><b>${esc(modelName(s.model))}</b></div><div class="kv"><span>Thinking</span><b>${s.thinking === false ? 'Off' : esc(cap(s.effort))}</b></div><div class="kv"><span>Mode</span><b>${esc(MODES[s.mode]?.[0] || s.mode)}</b></div><div class="kv"><span>Folder</span><b>${esc(short(s.cwd))}</b></div></div>
-      ${files.size ? `<div class="panel"><h3>Files touched</h3><ul class="files">${[...files].map(([p, m]) => `<li><span>${esc(p)}</span><em>${m === 'read' ? 'Read' : m === 'write' ? 'Written' : 'Edited'}</em></li>`).join('')}</ul></div>` : ''}`;
-  }
+  if (S.itab === 'stats') box.innerHTML = S.cur ? `<div class="ihead"><h2>${esc(S.cur.title)}</h2></div>` + statsHtml(S.cur) : '<div class="iempty">No session open.</div>';
+}
+
+// Usage dashboard: the Inspector's Session tab when unfolded, the Usage sheet (tap the meter) otherwise.
+function statsHtml(s) {
+  const u = s.usage || {}, inTok = (u.hit || 0) + (u.miss || 0), hitPct = inTok ? Math.round(100 * (u.hit || 0) / inTok) : 0;
+  const k = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+  const tools = S.items.filter(x => x.kind === 'tool'), files = new Map();
+  for (const t of tools) if (t.args?.path && /file|list_dir/.test(t.name)) files.set(t.args.path, t.name === 'read_file' || t.name === 'list_dir' ? (files.get(t.args.path) || 'read') : t.name === 'write_file' ? 'write' : 'edit');
+  const ctx = u.lastPrompt || 0;
+  return `<div class="panel"><h3>Context window</h3><div class="kpi" style="padding:0"><b style="margin:0">${k(ctx)}</b></div><div class="plan"><i style="width:${Math.min(100, 100 * ctx / 1048576)}%"></i></div><div class="planends"><span>${k(ctx)} used</span><span>1M</span></div></div>
+    <div class="kpis"><div class="kpi"><span>Balance</span><b class="balv">${esc(S.balance || '…')}</b><small>DeepSeek account</small></div>
+    <div class="kpi"><span>Spent</span><b>$${(u.costPeak || 0).toFixed(4)}</b><small>$${(u.costOff || 0).toFixed(4)} off-peak</small></div>
+    <div class="kpi"><span>Speed</span><b>${u.tps ? u.tps + ' tok/s' : 'None yet'}</b><small>${u.genMs ? `${Math.round(u.genOut / (u.genMs / 1000))} tok/s average` : 'Measured per model call'}</small></div>
+    <div class="kpi"><span>Cache hits</span><b>${hitPct}%</b><small>${k(u.hit || 0)} of ${k(inTok)} in</small></div>
+    <div class="kpi"><span>Tool calls</span><b>${tools.length}</b><small>${tools.filter(t => t.status === 'fail').length} failed · ${tools.filter(t => t.status === 'denied').length} denied</small></div>
+    <div class="kpi"><span>Output</span><b>${k(u.out || 0)}</b><small>tokens written</small></div></div>
+    <div class="panel"><h3>Session</h3><div class="kv"><span>Model</span><b>${esc(modelName(s.model))}</b></div><div class="kv"><span>Thinking</span><b>${s.thinking === false ? 'Off' : esc(cap(s.effort))}</b></div><div class="kv"><span>Mode</span><b>${esc(MODES[s.mode]?.[0] || s.mode)}</b></div><div class="kv"><span>Folder</span><b>${esc(short(s.cwd))}</b></div></div>
+    ${files.size ? `<div class="panel"><h3>Files touched</h3><ul class="files">${[...files].map(([p, m]) => `<li><span>${esc(p)}</span><em>${m === 'read' ? 'Read' : m === 'write' ? 'Written' : 'Edited'}</em></li>`).join('')}</ul></div>` : ''}`;
+}
+function usageSheet() {
+  if (!S.cur) return toast('Open a session to see its usage');
+  haptic(); sheet(`<h3>Usage</h3>${statsHtml(S.cur)}`); refreshBalance(true);
+}
+
+/* ---------- account balance: on boot, after each run, and whenever a view of it opens ---------- */
+let balAt = 0;
+async function refreshBalance(force) {
+  if (!force && Date.now() - balAt < 20000) return; balAt = Date.now();
+  try { const r = await api('GET', '/api/balance'); S.balance = (r.balance_infos || []).map(x => `${x.total_balance} ${x.currency}`).join(', ') || 'Unknown'; }
+  catch { S.balance = S.balance || 'Unavailable'; }
+  $('#balBtn').innerHTML = `<span>Balance</span><b>${esc(S.balance)}</b>`;
+  document.querySelectorAll('.balv, #bal').forEach(e => { e.textContent = S.balance; });
 }
 
 function deckLive() {
