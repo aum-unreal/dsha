@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="color-scheme" content="dark">
+<title>DSHA</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <button class="icon" id="menuBtn" aria-label="Sessions"></button>
+    <div id="titleBox">
+      <div id="title">DSHA</div>
+      <button id="cwdChip" class="sub"></button>
+    </div>
+    <button class="chip" id="modeChip" aria-label="Permission mode"></button>
+    <button class="icon" id="moreBtn" aria-label="Session options"></button>
+  </header>
+  <main id="scroller"><div id="log"></div><div id="empty"></div></main>
+  <button id="jump" aria-label="Scroll to bottom" hidden></button>
+  <section id="todos" hidden></section>
+  <footer id="composer">
+    <div id="slash" hidden></div>
+    <div id="inputRow">
+      <textarea id="input" rows="1" placeholder="Ask dsh…" enterkeyhint="send" autocomplete="off" spellcheck="true"></textarea>
+      <button id="sendBtn" class="send" aria-label="Send"></button>
+    </div>
+    <div id="meter"></div>
+  </footer>
+</div>
+<aside id="drawer" aria-hidden="true">
+  <div class="drawerHead"><div class="brand"><span class="logo"></span>DSHA</div><button class="icon" id="settingsBtn" aria-label="Settings"></button></div>
+  <button id="newBtn" class="primary wide"></button>
+  <div id="sessions"></div>
+  <div id="conn" class="conn"></div>
+</aside>
+<div id="scrim"></div>
+<div id="sheet" role="dialog" aria-modal="true" hidden><div class="grab"></div><div id="sheetBody"></div></div>
+<div id="toast" role="status"></div>
+<script src="vendor/markdown-it.js"></script>
+<script src="vendor/purify.js"></script>
+<script src="vendor/highlight.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

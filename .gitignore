@@ -1,0 +1,6 @@
+build/
+*.apk
+*.idsig
+tests/*.png
+tests/*.log
+node_modules/
