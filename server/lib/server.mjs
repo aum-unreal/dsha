@@ -11,8 +11,10 @@ import { DeepSeek } from './deepseek.mjs';
 import { Mcp, loadMcpConfig, saveMcpConfig } from './mcp.mjs';
 import { listSkills, readSkill, setSkill, setClaudeSkills, createSkill, deleteSkill, instructionFiles, writeInstructions, listMemory, readMemory, deleteMemory } from './skills.mjs';
 import { systemPrompt } from './agent.mjs';
+import { listAgents, readAgent, saveAgent, setAgent, setClaudeAgents, deleteAgent } from './agents.mjs';
+import { TOOLS } from './tools.mjs';
 
-export const VERSION = '0.5.2';
+export const VERSION = '0.6.0';
 
 export function createServer({ config = loadConfig } = {}) {
   let cfg = config();
@@ -20,6 +22,11 @@ export function createServer({ config = loadConfig } = {}) {
   const mcp = new Mcp();
   const deps = { config: getCfg, mcp };
 
+  const agentList = async cwd => {
+    const plugin = await mcp.schemas(new Set(Object.keys(TOOLS))).catch(() => []);
+    const tools = [...Object.entries(TOOLS).filter(([n]) => n !== 'agent').map(([name, t]) => ({ name, risk: t.risk })), ...plugin.map(t => ({ name: t.function.name, risk: mcp.lookup(t.function.name)?.risk || 'exec', mcp: true }))];
+    return { ...listAgents(cwd), tools };
+  };
   const routes = [
     ['GET', /^\/api\/health$/, () => ({ ok: true, version: VERSION, hasKey: !!readKey(), model: cfg.model, home: HOME, running: activeRuns(), tempRoots: TEMP_ROOTS, userHome: USER_HOME, api: apiState })],
     ['GET', /^\/api\/config$/, () => pub(cfg)],
@@ -60,6 +67,12 @@ export function createServer({ config = loadConfig } = {}) {
     ['DELETE', /^\/api\/mcp\/([\w-]{1,40})$/, ([name]) => { const all = loadMcpConfig(); delete all[name]; saveMcpConfig(all); mcp.reload(); return mcp.status(); }],
     ['GET', /^\/api\/mcp\/([\w-]{1,40})\/tools$/, async ([name]) => { await mcp.schemas(); return mcp.tools(name); }],
     // Skills and instruction files, resolved against a working directory (default: the configured one).
+    // Subagents. Lists carry the tool names a definition can pick from (built-ins, then connected plugins).
+    ['GET', /^\/api\/agents$/, async q => agentList(cwdOf(q.query.get('cwd')))],
+    ['GET', /^\/api\/agents\/read$/, q => user(() => readAgent(cwdOf(q.query.get('cwd')), q.query.get('id')))],
+    ['POST', /^\/api\/agents$/, async (_, b) => { const cwd = cwdOf(b.cwd); const id = user(() => saveAgent(cwd, b)); return { id, ...await agentList(cwd) }; }],
+    ['PATCH', /^\/api\/agents$/, async (_, b) => { if ('claude' in b) setClaudeAgents(b.claude); if (b.id) setAgent(String(b.id), !!b.enabled); return agentList(cwdOf(b.cwd)); }],
+    ['POST', /^\/api\/agents\/delete$/, async (_, b) => { const cwd = cwdOf(b.cwd); user(() => deleteAgent(cwd, String(b.id))); return agentList(cwd); }],
     ['GET', /^\/api\/skills$/, q => listSkills(cwdOf(q.query.get('cwd')))],
     ['GET', /^\/api\/skills\/read$/, q => user(() => readSkill(cwdOf(q.query.get('cwd')), q.query.get('id')))],
     ['POST', /^\/api\/skills$/, (_, b) => { const cwd = cwdOf(b.cwd); const id = user(() => createSkill(cwd, b)); return { id, ...listSkills(cwd) }; }],

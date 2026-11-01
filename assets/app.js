@@ -19,14 +19,15 @@ const I = {
   arrow: svg('<path d="M5 12h14M13 6l6 6-6 6"/>'), activity: svg('<path d="M3 12h4l3-8 4 16 3-8h4"/>'), chart: svg('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'), fold: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>'),
   circle: svg('<circle cx="12" cy="12" r="7"/>'), half: svg('<circle cx="12" cy="12" r="7"/><path d="M12 5a7 7 0 0 1 0 14z" fill="currentColor"/>'),
   expand: svg('<path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/>'), shrink: svg('<path d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5"/>'),
+  agents: svg('<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M6 8.5v1a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3v-1M12 12.5v3"/>'),
   book: svg('<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 21V5M8 7h7"/>'), back: svg('<path d="M15 6l-6 6 6 6"/>'),
   share: svg('<path d="M12 3v13M7 8l5-5 5 5"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/>'), trash: svg('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'), link: svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
 };
 const MARK = '<svg class="mark" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="6" fill="#fff" stroke="none"/><path d="M6.5 13c1.8-3.4 3.7-3.4 5.5 0s3.7 3.4 5.5 0" stroke="#000" stroke-width="2.2"/></svg>';
-const TOOL_NAME = { bash: 'Shell', read_file: 'Read file', write_file: 'Write file', edit_file: 'Edit file', list_dir: 'List folder', grep: 'Search', glob: 'Find files', web_fetch: 'Fetch', todo_write: 'Task list', skill: 'Skill', session_log: 'Session log', preview: 'Preview' };
+const TOOL_NAME = { bash: 'Shell', read_file: 'Read file', write_file: 'Write file', edit_file: 'Edit file', list_dir: 'List folder', grep: 'Search', glob: 'Find files', web_fetch: 'Fetch', todo_write: 'Task list', skill: 'Skill', session_log: 'Session log', preview: 'Preview', agent: 'Agent' };
 const tname = n => TOOL_NAME[n] || n.replace(/_/g, ' ');
 const TODO_ICON = { completed: I.check, in_progress: I.half, pending: I.circle };
-const TOOL_ICON = { bash: I.term, read_file: I.file, write_file: I.pen, edit_file: I.pen, list_dir: I.folder, grep: I.search, glob: I.search, web_fetch: I.globe, todo_write: I.list, skill: I.book, session_log: I.activity, preview: I.globe };
+const TOOL_ICON = { bash: I.term, read_file: I.file, write_file: I.pen, edit_file: I.pen, list_dir: I.folder, grep: I.search, glob: I.search, web_fetch: I.globe, todo_write: I.list, skill: I.book, session_log: I.activity, preview: I.globe, agent: I.agents };
 const MODES = { ask: ['Ask', 'Asks before shell, edits and web fetches'], edits: ['Edits', 'File edits run freely; shell still asks'], auto: ['Auto', 'Everything runs without asking'] };
 
 /* ---------- transport ---------- */
@@ -104,7 +105,7 @@ function follow() { if (stick) scroller.scrollTop = scroller.scrollHeight; }
 $('#jump').innerHTML = I.down; $('#jump').onclick = () => { stick = true; scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' }); };
 
 /* ---------- items ---------- */
-function add(item) { S.items.push(item); item.el = build(item); log.append(item.el); paint(item); return item; }
+function add(item, box = log) { S.items.push(item); item.el = build(item); box.append(item.el); paint(item); return item; }
 function last() { return S.items[S.items.length - 1]; }
 function build(it) {
   switch (it.kind) {
@@ -116,6 +117,9 @@ function build(it) {
       e.innerHTML = `<button class="head"><span class="ti">${TOOL_ICON[it.name] || I.term}</span><span class="tn"></span><span class="ts"></span><span class="st"></span></button><div class="ask"><p></p><div class="cmd"></div><div class="row"><button class="deny">Deny</button><button class="always">Always</button><button class="allow">Allow</button></div></div><div class="out"><pre class="args"></pre><pre class="res"></pre></div>`;
       e.querySelector('.head').onclick = () => { haptic(); if (layout.mode === 'wide') { if (chatFull) setChatFull(false); S.sel = S.sel === it.id ? null : it.id; S.itab = 'activity'; for (const t of S.items) if (t.kind === 'tool') t.el.classList.toggle('sel', t.id === S.sel); ui(); } else e.classList.toggle('open'); };
       for (const d of ['allow', 'always', 'deny']) e.querySelector('.' + d).onclick = () => decide(it, d);
+      // A subagent's card holds its own steps, always in view so a long delegation shows its progress.
+      if (it.name === 'agent') { e.classList.add('agentcard'); it.subsEl = h('div', 'subs'); e.querySelector('.ask').before(it.subsEl); it.nTools ??= 0; }
+      if (it.parent) e.classList.add('sub');
       return e;
     }
     case 'notice': {
@@ -157,9 +161,9 @@ function paint(it) {
       break;
     }
     case 'tool': {
-      e.className = 'tool ' + (it.status || 'run') + (e.classList.contains('open') ? ' open' : '') + (S.sel === it.id ? ' sel' : '');
-      e.querySelector('.tn').textContent = tname(it.name);
-      e.querySelector('.ts').textContent = it.summary || '';
+      e.className = 'tool ' + (it.subsEl ? 'agentcard ' : '') + (it.parent ? 'sub ' : '') + (it.status || 'run') + (e.classList.contains('open') ? ' open' : '') + (S.sel === it.id ? ' sel' : '');
+      e.querySelector('.tn').textContent = it.name === 'agent' ? agentLabel(it) : tname(it.name);
+      e.querySelector('.ts').textContent = it.name === 'agent' ? it.args?.description || '' : it.summary || '';
       e.querySelector('.ts').classList.toggle('plain', it.name === 'todo_write');
       e.querySelector('.st').textContent = statusText(it);
       e.querySelector('.args').textContent = argsText(it);
@@ -174,10 +178,16 @@ function paint(it) {
 }
 function flushMd() { mdTimer = 0; for (const it of mdQueue) { renderMd(it.el, it.text); it.el.classList.toggle('cursor', !!it.live); } mdQueue.clear(); follow(); }
 const fmtMs = ms => ms < 1000 ? ms + ' ms' : ms < 60000 ? (ms / 1000).toFixed(1) + ' s' : Math.round(ms / 60000) + ' min';
-const statusText = it => { const st = it.status || 'run', t = it.ms != null ? ' · ' + fmtMs(it.ms) : ''; return { run: 'Running', waiting: 'Needs you', ok: 'Done' + t, fail: 'Failed' + t, denied: 'Denied' }[st]; };
+// "Explore", or the name the main agent gave a subagent it designed.
+const agentLabel = it => cap(it.agent || (it.args?.role ? it.args?.name || 'custom' : it.args?.subagent_type || 'general-purpose'));
+const subCount = it => it.nTools ? ` · ${it.nTools} tool${it.nTools === 1 ? '' : 's'}` : '';
+const statusText = it => { const st = it.status || 'run', t = it.ms != null ? ' · ' + fmtMs(it.ms) : '';
+  if (it.name === 'agent') return { run: (it.nTools ? 'Working' : 'Starting') + subCount(it), waiting: 'Needs you', ok: 'Done' + t + subCount(it), fail: 'Failed' + t, denied: 'Denied' }[st]; return { run: 'Running', waiting: 'Needs you', ok: 'Done' + t, fail: 'Failed' + t, denied: 'Denied' }[st]; };
 const askText = it => ({ bash: 'Run this command?', write_file: 'Write this file?', edit_file: 'Apply this edit?', web_fetch: 'Fetch this URL?' }[it.name] || `Allow ${it.name}?`);
 function argsText(it) {
   const a = it.args || {};
+  if (it.noArgs) return it.summary || '';
+  if (it.name === 'agent') return `${a.role ? 'Role: ' + a.role + '\n' + (a.tools ? 'Tools: ' + a.tools.join(', ') + '\n' : '') + (a.model ? 'Model: ' + a.model + '\n' : '') + '\n' : ''}${a.prompt || ''}`;
   if (it.name === 'bash') return '$ ' + a.command;
   if (it.name === 'write_file') return `${a.path} (${String(a.content || '').split('\n').length} lines)`;
   if (it.name === 'edit_file') return `${a.path}\n− ${a.old_string}\n+ ${a.new_string}`;
@@ -196,10 +206,15 @@ function fromMessages(msgs, meta = {}) {
     else if (m.role === 'assistant') {
       if (m.reasoning_content) add({ kind: 'think', text: m.reasoning_content, ms: meta['think' + i] });
       if (m.content) add({ kind: 'text', text: m.content });
-      for (const c of m.tool_calls || []) { let args = {}; try { args = JSON.parse(c.function.arguments); } catch {} tools[c.id] = add({ kind: 'tool', id: c.id, name: c.function.name, args, summary: summarize(c.function.name, args), status: 'fail', content: '(no result: the run was interrupted)' }); }
+      for (const c of m.tool_calls || []) {
+        let args = {}; try { args = JSON.parse(c.function.arguments); } catch {}
+        const t = tools[c.id] = add({ kind: 'tool', id: c.id, name: c.function.name, args, summary: summarize(c.function.name, args), status: 'fail', content: '(no result: the run was interrupted)' });
+        // A subagent's own steps live in meta (they never enter the conversation), keyed "<agent call>/<call>".
+        if (t.subsEl) for (const [k, v] of Object.entries(meta)) if (v?.parent === c.id) { t.nTools++; add({ kind: 'tool', id: k, parent: c.id, name: v.name, noArgs: true, summary: v.summary, status: v.denied ? 'denied' : v.ok ? 'ok' : 'fail', content: v.content, ms: v.ms }, t.subsEl); }
+      }
     } else if (m.role === 'tool' && tools[m.tool_call_id]) {
       const t = tools[m.tool_call_id], mm = meta[m.tool_call_id] || {};
-      Object.assign(t, { content: clipText(m.content), status: mm.denied ? 'denied' : mm.ok === false ? 'fail' : 'ok', ms: mm.ms }); paint(t);
+      Object.assign(t, { content: clipText(m.content), status: mm.denied ? 'denied' : mm.ok === false ? 'fail' : 'ok', ms: mm.ms }, mm.agent ? { agent: mm.agent } : {}); paint(t);
     }
   });
   addFoot();
@@ -232,11 +247,16 @@ function apply(ev) {
       countGen(ev.d);
       if (L?.kind === 'text' && L.live) { L.text += ev.d; paint(L); } else { closeLive(); add({ kind: 'text', text: ev.d, live: true, t0: Date.now() }); }
       break;
-    case 'tool_call': closeLive(); add({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args || {}, summary: ev.summary, status: 'run', output: '', t0: Date.now() }); break;
+    case 'tool_call': {
+      const p = ev.parent && tool(ev.parent);
+      if (p) { p.nTools++; paint(p); add({ kind: 'tool', id: ev.id, parent: ev.parent, name: ev.name, args: ev.args || {}, summary: ev.summary, status: 'run', output: '', t0: Date.now() }, p.subsEl); break; }
+      closeLive(); add({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args || {}, summary: ev.summary, status: 'run', output: '', t0: Date.now() }); break;
+    }
+    case 'sub_step': { const p = tool(ev.parent); if (p) { p.step = ev.step; paint(p); } break; }
     case 'approval': { const t = tool(ev.id); if (t) { t.status = 'waiting'; paint(t); stick = true; } haptic(); if (!visible()) N?.notify('dsh needs approval', `${ev.name}: ${String(ev.summary).slice(0, 200)}`); break; }
     case 'approval_done': { const t = tool(ev.id); if (t && t.status === 'waiting') { t.status = ev.decision === 'deny' ? 'denied' : 'run'; paint(t); } break; }
     case 'tool_output': { const t = tool(ev.id); if (t) { t.output = clipText((t.output || '') + ev.d, 12000); if (t.el.classList.contains('open')) paint(t); } break; }
-    case 'tool_result': { const t = tool(ev.id); if (t) { Object.assign(t, { content: ev.content, status: ev.denied ? 'denied' : ev.ok ? 'ok' : 'fail', ms: ev.ms }); paint(t); } break; }
+    case 'tool_result': { const t = tool(ev.id); if (t) { Object.assign(t, { content: ev.content, status: ev.denied ? 'denied' : ev.ok ? 'ok' : 'fail', ms: ev.ms }, ev.agent ? { agent: ev.agent, nTools: ev.tools } : {}); paint(t); } break; }
     case 'usage': if (S.cur) { S.cur.usage = ev.total; meter(); } S.gen = null; break;
     case 'todos': S.todos = ev.todos; todos(); break;
     case 'title': if (S.cur) { S.cur.title = ev.title; header(); } break;
@@ -422,7 +442,7 @@ function strip() { if (!stripQueued) { stripQueued = true; requestAnimationFrame
 function drawStrip() {
   const bar = $('#run'), segs = $('#runSegs');
   const lt = S.items.map(x => x.kind).lastIndexOf('user');
-  const steps = (lt < 0 ? [] : S.items.slice(lt + 1)).filter(x => x.kind === 'think' || x.kind === 'tool' || x.kind === 'text');
+  const steps = (lt < 0 ? [] : S.items.slice(lt + 1)).filter(x => !x.parent && (x.kind === 'think' || x.kind === 'tool' || x.kind === 'text'));
   const failed = !S.running && last()?.kind === 'apierr';
   bar.classList.toggle('on', (!!steps.length || failed) && (S.running || !!S.cur));
   if (!steps.length) { segs.textContent = ''; $('#runText').innerHTML = failed ? `<b>Failed</b> · ${esc(API_ERR[last().kind2] || API_ERR.bad)}` : ''; return; }
@@ -476,7 +496,7 @@ const COMMANDS = [
   ['/new', 'New session', () => newSession()], ['/compact', 'Summarise history to free context', () => compact()],
   ['/mode', 'Permission mode', () => modeSheet()], ['/model', 'Model and thinking', () => optionsSheet()],
   ['/cwd', 'Change working directory', () => pickDir(S.cur?.cwd, d => patch({ cwd: d }))], ['/settings', 'Connection, key, defaults', () => settingsSheet()],
-  ['/plugins', 'MCP tool servers', () => agentPage('plugins')], ['/skills', 'Skills dsh can load', () => agentPage('skills')], ['/instructions', 'DSH.md and other instruction files', () => agentPage('instructions')],
+  ['/agents', 'Subagents', () => agentPage('agents')], ['/plugins', 'MCP tool servers', () => agentPage('plugins')], ['/skills', 'Skills dsh can load', () => agentPage('skills')], ['/instructions', 'DSH.md and other instruction files', () => agentPage('instructions')],
 ];
 function slash() {
   const v = input.value, box = $('#slash');
@@ -527,7 +547,7 @@ function sharedText(t) {
 // A full-screen page over the chat, since it is managed rather than glanced at. Everything is read
 // for the open session's folder (or the default folder), because skills and instruction files can
 // live in the project as well as in ~/.dsh.
-const PTABS = [['plugins', 'Plugins'], ['skills', 'Skills'], ['memory', 'Memory'], ['instructions', 'Instructions']];
+const PTABS = [['agents', 'Subagents'], ['plugins', 'Plugins'], ['skills', 'Skills'], ['memory', 'Memory'], ['instructions', 'Instructions']];
 const RISK = { read: 'Read only', edit: 'Edits files', exec: 'Runs anything' };
 const SOURCES = { project: ['This project', '.dsh/skills in the session folder'], dsh: ['All projects', '~/.dsh/skills'], builtin: ['Built in', 'Ship with dsh'], claude: ['Claude Code', '~/.claude/skills'] };
 const pageCwd = () => S.cur?.cwd || S.cfg?.cwd || home();
@@ -535,14 +555,14 @@ const cwdQ = () => 'cwd=' + encodeURIComponent(pageCwd());
 const sw = (on, attrs) => `<button class="switch${on ? ' on' : ''}" role="switch" aria-checked="${on}" ${attrs}><i></i></button>`;
 const kb = n => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
 
-function agentPage(tab = S.ptab || 'plugins') {
+function agentPage(tab = S.ptab || 'agents') {
   S.ptab = tab; drawer(false); closeSheet();
   const page = $('#page'); page.hidden = false; document.body.classList.add('paged'); syncPreview();
   $('#pageSub').textContent = 'For ' + short(pageCwd());
   $('#ptabs').innerHTML = PTABS.map(([k, l]) => `<button role="tab" data-t="${k}" class="${k === tab ? 'on' : ''}" aria-selected="${k === tab}">${l}</button>`).join('');
   $('#ptabs').querySelectorAll('button').forEach(b => b.onclick = () => { haptic(); agentPage(b.dataset.t); });
   $('#pbody').scrollTop = 0;
-  ({ plugins: pluginsTab, skills: skillsTab, memory: memoryTab, instructions: instructionsTab })[tab]();
+  ({ agents: agentsTab, plugins: pluginsTab, skills: skillsTab, memory: memoryTab, instructions: instructionsTab })[tab]();
 }
 function closePage() { $('#page').hidden = true; document.body.classList.remove('paged'); syncPreview(); }
 const pbody = html => { if (html != null) $('#pbody').innerHTML = html; return $('#pbody'); };
@@ -606,6 +626,80 @@ function pluginForm(m) {
   const show = () => { b.querySelector('#mUrlF').hidden = kind !== 'http'; b.querySelector('#mCmdF').hidden = kind === 'http'; };
   show();
 }
+
+/* subagents */
+// dsh designs subagents itself as it works; these are the saved ones it can reuse by name, Claude Code style.
+const ASRC = { project: ['This project', '.dsh/agents in the session folder'], dsh: ['All projects', '~/.dsh/agents'], builtin: ['Presets', 'Ship with dsh'], claude: ['Claude Code', '~/.claude/agents, tool names mapped'] };
+const AMODEL = { inherit: 'Session model', 'deepseek-flash': 'Flash', 'deepseek-v4-pro': 'V4 Pro' };
+const toolsText = a => !a.tools ? 'All tools' : a.tools.length <= 3 ? a.tools.map(tname).join(', ') : `${a.tools.length} tools`;
+async function agentsTab() {
+  pbody('<p class="hint">Loading subagents…</p>');
+  try { S.agents = await api('GET', '/api/agents?' + cwdQ()); } catch (e) { return pbody(`<p class="err-text">${esc(e.message)}</p>`); }
+  if (pageOn('agents')) drawAgents();
+}
+function drawAgents() {
+  const { agents, claude } = S.agents;
+  const group = src => {
+    const list = agents.filter(x => x.source === src), [title, where] = ASRC[src];
+    const head = `<div class="ghead"><div><h3>${title}</h3><p class="r2">${where}</p></div>${src === 'claude' ? sw(claude, 'data-claude aria-label="Use Claude Code subagents"') : ''}</div>`;
+    if (!list.length) return src === 'claude' || src === 'builtin' ? '' : head + `<div class="empty-note">None yet.</div>`;
+    return head + `<div class="rows${src === 'claude' && !claude ? ' dim' : ''}">${list.map(x => `<div class="row"><button class="rx" data-open="${esc(x.id)}"><span class="r1">${esc(x.name)}${x.shadowed ? ' <span class="tag">Hidden by another with this name</span>' : ''}</span><span class="r2">${esc(x.description || 'No description')}</span><span class="r3">${esc(AMODEL[x.model] || x.model)} · ${esc(toolsText(x))}</span></button>${sw(x.enabled, `data-id="${esc(x.id)}" aria-label="Use ${esc(x.name)}"` + (src === 'claude' && !claude ? ' disabled' : ''))}</div>`).join('')}</div>`;
+  };
+  const on = agents.filter(x => x.enabled && !x.shadowed).length;
+  pbody(`<p class="lead">dsh spawns subagents on its own: a helper with a fresh context, its own tools and model, for one part of a task. It writes their role as it goes. Saved subagents are roles it can reuse by name. ${on} saved in use.</p>
+    ${['project', 'dsh', 'builtin', 'claude'].map(g => { const html = group(g); return html ? `<div class="group">${html}</div>` : ''; }).join('')}
+    <div class="rowbtns"><button class="secondary" id="agAsk">Ask dsh to write one</button><button class="primary" id="agNew">${I.plus}New subagent</button></div>`);
+  const box = pbody();
+  box.querySelectorAll('[data-open]').forEach(b => b.onclick = () => agentSheet(b.dataset.open));
+  box.querySelectorAll('.switch[data-id]').forEach(b => b.onclick = async () => { haptic(); try { S.agents = await api('PATCH', '/api/agents', { cwd: pageCwd(), id: b.dataset.id, enabled: !b.classList.contains('on') }); drawAgents(); } catch (e) { toast(e.message); } });
+  box.querySelector('[data-claude]')?.addEventListener('click', async () => { haptic(); try { S.agents = await api('PATCH', '/api/agents', { cwd: pageCwd(), claude: !claude }); drawAgents(); } catch (e) { toast(e.message); } });
+  $('#agNew').onclick = () => agentForm();
+  $('#agAsk').onclick = () => askChat('Design and save a subagent for ');
+}
+async function agentSheet(id) {
+  let a; try { a = await api('GET', `/api/agents/read?${cwdQ()}&id=${encodeURIComponent(id)}`); } catch (e) { return toast(e.message); }
+  const b = sheet(`<h3>${esc(a.name)}</h3><p class="hint" style="margin:-8px 0 12px">${esc(ASRC[a.source][0])} · <code>${esc(short(a.file))}</code></p>
+    <div class="kvs">${a.description ? `<div class="kv"><span>Used when</span><b style="text-align:left">${esc(a.description)}</b></div>` : ''}<div class="kv"><span>Model</span><b>${esc(AMODEL[a.model] || a.model)}${a.effort ? ' · ' + esc(a.effort) + ' thinking' : ''}</b></div><div class="kv"><span>Tools</span><b style="text-align:left">${a.tools ? a.tools.map(n => `<code>${esc(n)}</code>`).join(' ') : 'All tools'}</b></div></div>
+    <h4>System prompt</h4><div class="mdbox md" id="agBody"></div>
+    <div class="rowbtns"><button class="secondary" data-a="toggle">${a.enabled ? 'Turn off' : 'Turn on'}</button><button class="secondary" data-a="edit">${a.editable ? 'Edit' : 'Duplicate'}</button>${a.enabled ? '<button class="primary" data-a="use">Use in chat</button>' : ''}</div>
+    ${a.editable ? `<button class="ghost-danger wide" data-a="del">${I.trash}Delete</button>` : ''}`, {
+    use: () => askChat(`Use the ${a.name} subagent to `),
+    edit: () => agentForm(a.editable ? a : { ...a, id: null, name: a.name + '-copy' }),
+    toggle: async () => { closeSheet(); try { S.agents = await api('PATCH', '/api/agents', { cwd: pageCwd(), id, enabled: !a.enabled }); drawAgents(); } catch (e) { toast(e.message); } },
+    del: async () => { if (!confirm(`Delete the subagent ${a.name}?`)) return; closeSheet(); try { S.agents = await api('POST', '/api/agents/delete', { cwd: pageCwd(), id }); drawAgents(); toast('Deleted'); } catch (e) { toast(e.message); } },
+  });
+  renderMd(b.querySelector('#agBody'), a.prompt);
+}
+// a: an existing definition to edit (a.id set) or prefill a new one from (a.id null).
+function agentForm(a = {}) {
+  const all = (S.agents?.tools || []).map(t => t.name);
+  let scope = a.source === 'project' ? 'project' : 'dsh', model = a.model === 'deepseek-flash' ? 'flash' : a.model === 'deepseek-v4-pro' ? 'pro' : 'inherit';
+  let picked = new Set(a.tools || []), preset = !a.tools ? 'all' : READ_TOOLS.every(n => picked.has(n)) && picked.size === READ_TOOLS.length ? 'read' : 'pick';
+  const chips = () => `<div class="chips" id="agTools"${preset === 'pick' ? '' : ' hidden'}>${all.map(n => `<button type="button" data-a="tool" data-v="${esc(n)}" class="chip${picked.has(n) ? ' on' : ''}" aria-pressed="${picked.has(n)}">${esc(tname(n))}</button>`).join('')}</div>`;
+  const b = sheet(`<h3>${a.id ? 'Edit ' + esc(a.name) : 'New subagent'}</h3>
+    <label class="field"><span>Name</span><input id="agName" value="${esc(a.name || '')}" placeholder="code-reviewer" autocapitalize="off" spellcheck="false"></label>
+    <label class="field"><span>Use it when</span><input id="agDesc" value="${esc(a.description || '')}" placeholder="Reviewing a change for bugs before it is committed"></label>
+    <h4>Model</h4>${seg('model', [['inherit', 'Session'], ['flash', 'Flash'], ['pro', 'V4 Pro']], model)}
+    <h4>Tools</h4>${seg('preset', [['all', 'All'], ['read', 'Read only'], ['pick', 'Choose']], preset)}${chips()}
+    ${a.id ? '' : `<h4>Available in</h4>${seg('scope', [['dsh', 'All projects'], ['project', 'This project']], scope)}`}
+    <label class="field" style="margin-top:16px"><span>System prompt</span><textarea id="agText" rows="9" placeholder="Who the subagent is, how it works, and what its final report must contain.">${esc(a.prompt || '')}</textarea></label>
+    <button class="primary wide" data-a="save">${a.id ? 'Save' : 'Create subagent'}</button><div class="err-text" id="agErr"></div>`, {
+    model: el => { model = el.dataset.v; on(el); },
+    scope: el => { scope = el.dataset.v; on(el); },
+    preset: el => { preset = el.dataset.v; on(el); if (preset === 'read') picked = new Set(READ_TOOLS); $('#agTools').hidden = preset !== 'pick'; $('#agTools').querySelectorAll('.chip').forEach(c => { c.classList.toggle('on', picked.has(c.dataset.v)); c.ariaPressed = picked.has(c.dataset.v); }); },
+    tool: el => { const n = el.dataset.v; picked.has(n) ? picked.delete(n) : picked.add(n); el.classList.toggle('on', picked.has(n)); el.ariaPressed = picked.has(n); },
+    save: async el => {
+      const tools = preset === 'all' ? null : preset === 'read' ? READ_TOOLS : [...picked];
+      if (tools && !tools.length) { $('#agErr').textContent = 'Pick at least one tool, or choose All.'; return; }
+      el.disabled = true;
+      try { S.agents = await api('POST', '/api/agents', { cwd: pageCwd(), id: a.id || undefined, scope, name: $('#agName').value, description: $('#agDesc').value, model, tools, prompt: $('#agText').value }); closeSheet(); drawAgents(); toast(a.id ? 'Saved' : 'Subagent created'); }
+      catch (e) { $('#agErr').textContent = e.message; el.disabled = false; }
+    },
+  });
+  function on(el) { el.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === el)); }
+  return b;
+}
+const READ_TOOLS = ['read_file', 'list_dir', 'grep', 'glob', 'web_fetch'];
 
 /* skills */
 async function skillsTab() {
@@ -729,7 +823,7 @@ document.querySelector('.brand').innerHTML = MARK + '<span>DSHA</span>';
 $('#menuBtn').innerHTML = I.menu; $('#menuBtn').onclick = () => { haptic(); drawer(true); };
 $('#moreBtn').innerHTML = I.more; $('#moreBtn').onclick = () => { haptic(); optionsSheet(); };
 $('#fsBtn').onclick = () => { haptic(); setChatFull(!chatFull); };
-$('#agentBtn').innerHTML = `${I.book}<span class="rx"><span class="r1">Plugins, skills and instructions</span></span>${I.chev}`; $('#agentBtn').onclick = () => agentPage();
+$('#agentBtn').innerHTML = `${I.agents}<span class="rx"><span class="r1">Subagents, plugins and skills</span></span>${I.chev}`; $('#agentBtn').onclick = () => agentPage();
 $('#pageBack').innerHTML = I.back; $('#pageBack').onclick = closePage;
 $('#settingsBtn').innerHTML = I.gear; $('#settingsBtn').onclick = () => { drawer(false); settingsSheet(); };
 $('#newBtn').innerHTML = I.plus + 'New session'; $('#newBtn').onclick = () => { drawer(false); newSession(); };

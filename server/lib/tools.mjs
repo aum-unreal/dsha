@@ -157,6 +157,24 @@ export const TOOLS = {
       return clip(sessionDigest(s), 30000);
     },
   },
+  agent: {
+    // Its own steps go through the permission gate one by one, so starting it needs no approval.
+    risk: 'read',
+    description: 'Spawn a subagent: a helper with its own fresh context and tools that does one task and returns one report; the user sees its steps. Use it for broad searches, independent pieces of work, or to keep long output out of this conversation. Several agent calls in one reply run in parallel. Either name a saved subagent (subagent_type, listed under "Subagents" in the system prompt) or design one on the spot by giving `role` (its system prompt: who it is and how it works), plus `tools` and `model` if it needs fewer tools or another model. The subagent sees nothing of this conversation, so the prompt must be a complete brief: the goal, what you already know, where to look, and what to report back.',
+    parameters: { type: 'object', properties: {
+      description: { type: 'string', description: 'A 3-6 word label shown to the user' },
+      prompt: { type: 'string', description: 'The full task brief' },
+      subagent_type: { type: 'string', description: 'A saved subagent by name. Omit it when you give a role.' },
+      role: { type: 'string', description: 'For a subagent you design now: its system prompt (expertise, method, what its report must contain)' },
+      name: { type: 'string', description: 'For a designed subagent: a short lowercase name shown to the user, e.g. "css-auditor"' },
+      tools: { type: 'array', items: { type: 'string' }, description: 'For a designed subagent: the tool names it may use; omit for all tools. Read-only work: read_file, list_dir, grep, glob, web_fetch' },
+      model: { type: 'string', enum: ['inherit', 'flash', 'pro'], description: 'For a designed subagent: flash is fast and cheap, pro is strongest, inherit uses the session model (default)' },
+    }, required: ['description', 'prompt'] },
+    async run(a, ctx) {
+      if (!ctx.subagent) throw new Error('Subagents cannot start subagents');
+      return ctx.subagent(a);
+    },
+  },
   preview: {
     risk: 'read',
     description: "Show a web page in the app's preview pane, the browser beside the chat on the unfolded phone: a dev server you started (http://127.0.0.1:<port>) or any http(s) page. Start the server in the background first (nohup ... &) and check it answers. Use after building or changing a page so the user sees it.",
@@ -212,6 +230,7 @@ export function summarize(name, a = {}) {
     case 'grep': return `${a.pattern}${a.path ? ' in ' + a.path : ''}`;
     case 'glob': return a.pattern;
     case 'web_fetch': case 'preview': return a.url;
+    case 'agent': return `${a.role ? a.name || 'custom' : a.subagent_type || 'general-purpose'}: ${a.description || ''}`;
     case 'todo_write': return `${(a.todos || []).length} items`;
     case 'skill': return a.name;
     case 'session_log': return a.list ? 'recent sessions' : a.id || 'this session';

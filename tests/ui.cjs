@@ -331,9 +331,50 @@ const stat = http.createServer((req, res) => {
     assert.equal(await page.locator('.apierr').count(), 0);
     assert.equal(await page.locator('.msg.user', { hasText: 'Are you there?' }).count(), 1);
 
-    // Agent setup page: plugins, skills, instruction files.
+    // Subagents in chat: dsh designs one, its steps sit inside the agent card, and they come back after a reload.
+    script = [
+      [delta({ tool_calls: [{ index: 0, id: 'sa', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: 'Survey the project', name: 'surveyor', role: 'You survey projects.', tools: ['read_file', 'list_dir'], model: 'flash', prompt: 'List the files and read the README.' }) } }] })],
+      [delta({ tool_calls: [{ index: 0, id: 's1', type: 'function', function: { name: 'list_dir', arguments: '{"path":"."}' } }] })],
+      [delta({ tool_calls: [{ index: 0, id: 's2', type: 'function', function: { name: 'read_file', arguments: '{"path":"../README.md"}' } }] })],
+      [delta({ content: 'A README and src/.' })],
+      [delta({ content: 'The surveyor found a README and src/.' })],
+    ];
+    await page.locator('#input').fill('Survey this with a subagent');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await page.locator('.md', { hasText: 'The surveyor found' }).waitFor({ timeout: 20000 });
+    const card = page.locator('.tool.agentcard').last();
+    assert.match(await card.locator('> .head .tn').textContent(), /Surveyor/);
+    assert.match(await card.locator('> .head .st').textContent(), /Done · .* · 2 tools/);
+    assert.equal(await card.locator('.subs > .tool.sub').count(), 2);
+    await page.waitForTimeout(250); await page.screenshot({ path: shot('subagent') });
+    await page.reload(); await page.locator('.tool.agentcard').last().waitFor();
+    assert.equal(await page.locator('.tool.agentcard').last().locator('.subs > .tool.sub').count(), 2, 'subagent steps survive a reload');
+    assert.match(await page.locator('.tool.agentcard').last().locator('.subs .tn').first().textContent(), /List folder/);
+
+    // Agent setup page: subagents first, then plugins, skills, instruction files.
     await page.getByRole('button', { name: 'Sessions' }).click(); await page.waitForTimeout(250);
     await page.locator('#agentBtn').click();
+    await page.locator('#pbody .rows .r1', { hasText: 'general-purpose' }).waitFor();
+    assert.ok(await page.locator('#pbody .rows .r1', { hasText: 'explore' }).isVisible());
+    await page.waitForTimeout(250); await page.screenshot({ path: shot('subagents') });
+    await page.getByRole('button', { name: 'New subagent' }).click();
+    await page.locator('#agName').fill('reviewer'); await page.locator('#agDesc').fill('Reviewing a change for bugs');
+    await page.locator('#sheet [data-a=model][data-v=flash]').click();
+    await page.locator('#sheet [data-a=preset][data-v=pick]').click();
+    await page.locator('#agTools .chip', { hasText: 'Read file' }).click();
+    await page.locator('#agTools .chip', { hasText: 'Search' }).click();
+    await page.locator('#agText').fill('You review diffs for bugs.');
+    await page.waitForTimeout(200); await page.screenshot({ path: shot('subagent-form') });
+    await page.locator('#sheet [data-a=save]').click();
+    await page.locator('#pbody .rows .r1', { hasText: 'reviewer' }).waitFor();
+    assert.match(fs.readFileSync(path.join(tmp, 'home', 'agents', 'reviewer.md'), 'utf8'), /tools: read_file, grep\nmodel: flash/);
+    assert.match(await page.locator('#pbody .row', { hasText: 'reviewer' }).locator('.r3').textContent(), /Flash · Read file, Search/);
+    await page.locator('#pbody [data-open="dsh:reviewer"]').click();
+    await page.locator('#sheet [data-a=edit]').click();
+    await page.locator('#agText').fill('You review diffs for bugs and style.');
+    await page.locator('#sheet [data-a=save]').click(); await page.waitForTimeout(300);
+    assert.match(fs.readFileSync(path.join(tmp, 'home', 'agents', 'reviewer.md'), 'utf8'), /bugs and style/);
+    await page.locator('#ptabs [data-t=plugins]').click();
     await page.locator('#page .empty-note', { hasText: 'No servers yet' }).waitFor();
     await page.getByRole('button', { name: 'Add server' }).click();
     await page.locator('#mName').fill('web'); await page.locator('#mUrl').fill('http://127.0.0.1:1/mcp');

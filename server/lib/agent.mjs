@@ -8,6 +8,7 @@ import os from 'node:os';
 import { DeepSeek, cost, asApiError } from './deepseek.mjs';
 import { TOOLS, schemas, summarize, clip } from './tools.mjs';
 import { contextFiles, skillPrompt, memoryPrompt } from './skills.mjs';
+import { agentPrompt, resolveAgent } from './agents.mjs';
 import { saveSession, loadSession, readKey } from './store.mjs';
 
 const runtimes = new Map();
@@ -32,7 +33,7 @@ export const dropRuntime = id => { runtimes.get(id)?.stop(); runtimes.delete(id)
 export const activeRuns = () => [...runtimes.values()].filter(r => r.running).map(r => r.s.id);
 
 export function systemPrompt(s, mcp = '') {
-  const files = contextFiles(s.cwd), skills = skillPrompt(s.cwd), memory = memoryPrompt();
+  const files = contextFiles(s.cwd), skills = skillPrompt(s.cwd), memory = memoryPrompt(), agents = agentPrompt(s.cwd);
   return `You are dsh, a coding and operations agent running on the user's own machine (${os.platform()} ${os.arch()}${process.env.PREFIX ? ', Termux on Android' : ''}) and talking to them through the DSHA phone app.
 Working directory: ${s.cwd}
 Date: ${new Date().toISOString().slice(0, 10)}
@@ -44,14 +45,14 @@ How to work:
 - For multi-step tasks keep a todo list with todo_write.
 - Tool calls may be denied by the user; if so, don't retry the same call — adjust or ask.
 - Don't run destructive commands (rm -rf, force-push, wiping data) unless the user clearly asked.
-- Report outcomes faithfully: if a command failed, say so.${mcp ? '\n\nExternal tool servers (MCP) connected; their tools sit next to the built-ins and follow the same approval rules:\n' + mcp : ''}${skills ? '\n\nSkills: load one with the skill tool before a task it covers.\n' + skills : ''}${memory ? '\n\nMemory index (~/.dsh/memory/MEMORY.md; read a memory file when its line is relevant, and keep memory current with the dsh-memory-evolve skill):\n' + memory : ''}${files ? '\n\nInstructions from the user (global DSH.md) and the working directory (DSH.md, AGENTS.md, CLAUDE.md):\n' + files : ''}`;
+- Report outcomes faithfully: if a command failed, say so.${mcp ? '\n\nExternal tool servers (MCP) connected; their tools sit next to the built-ins and follow the same approval rules:\n' + mcp : ''}\n\nSubagents: spawn helpers with the agent tool for searches across many files, independent parts of a task (several in one reply run in parallel), or work whose output would flood this conversation. Design one for the job by giving it a role (and tools and model when it needs less), or use a saved one. Brief each fully; it sees nothing here. Do simple lookups yourself. To keep a designed subagent for later, save it as ~/.dsh/agents/<name>.md (or .dsh/agents/ in the project): front matter name, description, tools, model (flash, pro or inherit), then its system prompt.${agents ? '\nSaved subagents:\n' + agents : ''}${skills ? '\n\nSkills: load one with the skill tool before a task it covers.\n' + skills : ''}${memory ? '\n\nMemory index (~/.dsh/memory/MEMORY.md; read a memory file when its line is relevant, and keep memory current with the dsh-memory-evolve skill):\n' + memory : ''}${files ? '\n\nInstructions from the user (global DSH.md) and the working directory (DSH.md, AGENTS.md, CLAUDE.md):\n' + files : ''}`;
 }
 
 export class Runtime {
   constructor(s, { config, mcp }) {
     this.s = s; this.config = config; this.mcp = mcp;
     this.events = []; this.seq = 0; this.subs = new Set();
-    this.running = false; this.abort = null; this.waiting = new Map(); this.runBase = s.messages.length; this.runSeq = 0;
+    this.running = false; this.abort = null; this.waiting = new Map(); this.subStats = new Map(); this.runBase = s.messages.length; this.runSeq = 0;
   }
 
   emit(type, data = {}) {
@@ -148,11 +149,14 @@ export class Runtime {
       this.save();
       if (finish === 'length' && !message.tool_calls) { this.emit('notice', { text: 'Reply hit the output token limit.' }); }
       if (!message.tool_calls?.length) return;
-      for (const call of message.tool_calls) {
-        const content = signal.aborted ? 'Cancelled: the user stopped the run.' : await this.runTool(call, signal);
-        s.messages.push({ role: 'tool', tool_call_id: call.id, content });
-        this.save();
-      }
+      // Subagents in one reply run side by side; other tools keep their order. Results go back in call order.
+      const calls = message.tool_calls, out = [];
+      const one = async (c, i) => { out[i] = signal.aborted ? 'Cancelled: the user stopped the run.' : await this.runTool(c, signal); };
+      const subs = Promise.all(calls.map((c, i) => c.function.name === 'agent' ? one(c, i) : null));
+      for (const [i, c] of calls.entries()) if (c.function.name !== 'agent') await one(c, i);
+      await subs;
+      for (const [i, c] of calls.entries()) s.messages.push({ role: 'tool', tool_call_id: c.id, content: out[i] });
+      this.save();
     }
     this.endReason = 'max_steps';
     this.emit('notice', { text: `Stopped after ${max} steps. Send a message to continue.` });
@@ -176,33 +180,77 @@ export class Runtime {
     }
   }
 
-  async runTool(call, signal) {
-    const s = this.s, name = call.function.name, id = call.id, t0 = Date.now();
+  // sub: for a subagent's own calls, { parent: the agent call's id, allow: tool-name filter }. Their event
+  // ids are prefixed with the parent's so parallel subagents can't collide, and their meta keeps enough
+  // (name, summary, a clipped result) to redraw them under the agent card when the session is reopened.
+  async runTool(call, signal, sub = null) {
+    const s = this.s, name = call.function.name, id = sub ? `${sub.parent}/${call.id}` : call.id, t0 = Date.now();
     let args;
     try { args = JSON.parse(call.function.arguments || '{}'); } catch (e) { args = null; }
-    const tool = TOOLS[name] || this.mcp?.lookup(name);
-    this.emit('tool_call', { id, name, args, summary: args ? summarize(name, args) : call.function.arguments, risk: tool?.risk, mcp: tool?.mcp });
+    const tool = sub && !sub.allow(name) ? null : TOOLS[name] || this.mcp?.lookup(name);
+    const summary = args ? summarize(name, args) : call.function.arguments, parent = sub?.parent;
+    this.emit('tool_call', { id, name, args, summary, risk: tool?.risk, mcp: tool?.mcp, parent });
     const finish = (ok, content, extra = {}) => {
-      s.meta[id] = { ok, ms: Date.now() - t0, ...extra };
-      this.emit('tool_result', { id, ok, content: clip(content, 8000), ms: s.meta[id].ms, ...extra });
+      Object.assign(extra, this.subStats.get(id)); this.subStats.delete(id);
+      s.meta[id] = { ok, ms: Date.now() - t0, ...extra, ...(sub ? { parent, name, summary: clip(summary, 300), content: clip(content, 2000) } : {}) };
+      this.emit('tool_result', { id, ok, content: clip(content, 8000), ms: s.meta[id].ms, ...extra, parent });
       return content;
     };
-    if (!tool) return finish(false, `Unknown tool: ${name}`);
+    if (!tool) return finish(false, sub && TOOLS[name] ? `The ${name} tool is not available to this subagent.` : `Unknown tool: ${name}`);
     if (!args) return finish(false, `Invalid JSON arguments: ${call.function.arguments}`);
     if (!this.allowed(name, tool.risk)) {
-      const decision = await new Promise(r => { this.waiting.set(id, r); this.emit('approval', { id, name, summary: summarize(name, args), args, mcp: tool.mcp }); });
+      const decision = await new Promise(r => { this.waiting.set(id, r); this.emit('approval', { id, name, summary: summarize(name, args), args, mcp: tool.mcp, parent }); });
       this.waiting.delete(id);
       this.emit('approval_done', { id, decision });
       if (decision === 'always') { if (!s.allow.includes(name)) s.allow.push(name); }
       else if (decision !== 'allow') return finish(false, signal.aborted ? 'Cancelled: the user stopped the run.' : 'The user denied this tool call.', { denied: true });
     }
     try {
-      const out = await tool.run(args, { cwd: s.cwd, signal, session: s, onOutput: d => this.emit('tool_output', { id, d }), preview: url => this.emit('preview', { url }) });
+      const out = await tool.run(args, { cwd: s.cwd, signal, session: s, onOutput: d => this.emit('tool_output', { id, d }), preview: url => this.emit('preview', { url }), subagent: sub ? null : a => this.subagent(a, id, signal) });
       if (name === 'todo_write') this.emit('todos', { todos: s.todos });
       return finish(true, out);
     } catch (e) {
       return finish(false, `Error: ${e?.message || e}`);
     }
+  }
+
+  // A subagent: its own loop over its own messages, sharing this session's permission gate, approvals,
+  // usage and event stream. Its final reply is the agent tool's result.
+  async subagent(a, parent, signal) {
+    const s = this.s, def = resolveAgent(s.cwd, a);
+    const model = def.model === 'inherit' ? s.model : def.model, ds = this.client();
+    const allow = n => n !== 'agent' && (!def.tools || def.tools.includes(n));
+    const builtin = schemas().filter(t => allow(t.function.name));
+    const files = contextFiles(s.cwd);
+    const messages = [{ role: 'system', content: `${def.prompt}
+
+You are the dsh subagent "${def.name}", started by the main dsh agent for one task, on the user's machine (${os.platform()} ${os.arch()}${process.env.PREFIX ? ', Termux on Android' : ''}).
+Working directory: ${s.cwd}
+Date: ${new Date().toISOString().slice(0, 10)}
+Work on your own: you cannot ask the user or the main agent anything, and the user may deny a tool call; adjust if so. Your final message is returned to the main agent as your whole result.${files ? '\n\nInstructions from the user and the working directory:\n' + files : ''}` }, { role: 'user', content: String(a.prompt || '') }];
+    const stats = { agent: def.name, spawned: def.source === 'spawned', model, steps: 0, tools: 0, in: 0, out: 0 };
+    this.subStats.set(parent, stats);
+    const max = this.config().maxSteps;
+    for (let step = 0; step < max; step++) {
+      if (signal.aborted) return 'Cancelled: the user stopped the run.';
+      const tools = this.mcp && !def.tools ? [...builtin, ...await this.mcp.schemas(new Set(Object.keys(TOOLS)))] : this.mcp ? [...builtin, ...(await this.mcp.schemas(new Set(Object.keys(TOOLS)))).filter(t => allow(t.function.name))] : builtin;
+      this.emit('sub_step', { parent, step });
+      let f0 = 0;
+      const r = await this.call(signal, () => f0 > 0, () => ds.stream({ model, messages, tools, effort: def.effort || s.effort, thinking: s.thinking !== false }, { reasoning: () => { f0 ||= Date.now(); }, text: () => { f0 ||= Date.now(); }, toolDelta: () => { f0 ||= Date.now(); } }, signal));
+      if (!r) return 'Cancelled: the user stopped the run.';
+      const { message, usage } = r;
+      if (!message.reasoning_content) delete message.reasoning_content;
+      messages.push(message);
+      this.account(usage, f0 ? Date.now() - f0 : 0, { model, sub: true });
+      stats.steps++; stats.in += usage.hit + usage.miss; stats.out += usage.out;
+      if (!message.tool_calls?.length) return message.content || '(The subagent finished without a reply.)';
+      for (const c of message.tool_calls) {
+        stats.tools++;
+        const content = signal.aborted ? 'Cancelled: the user stopped the run.' : await this.runTool(c, signal, { parent, allow });
+        messages.push({ role: 'tool', tool_call_id: c.id, content });
+      }
+    }
+    return `The subagent stopped after ${max} steps without a final report. Its last reply: ${messages.at(-1)?.content || '(none)'}`;
   }
 
   allowed(name, risk) {
@@ -213,11 +261,12 @@ export class Runtime {
   }
 
   // genMs: first streamed token to end of the call, so tok/s is decode speed, not time to first token.
-  account(u, genMs = 0) {
-    const U = this.s.usage, c = cost(this.s.model, u);
+  // sub: a subagent's call, priced at its own model and kept out of the context meter.
+  account(u, genMs = 0, { model = this.s.model, sub = false } = {}) {
+    const U = this.s.usage, c = cost(model, u);
     U.hit += u.hit; U.miss += u.miss; U.out += u.out; U.reasoning = (U.reasoning || 0) + (u.reasoning || 0);
     U.costPeak = (U.costPeak || 0) + c.peak; U.costOff = (U.costOff || 0) + c.offpeak;
-    U.lastPrompt = u.hit + u.miss;
+    if (!sub) U.lastPrompt = u.hit + u.miss;
     if (genMs > 0 && u.out > 0) { u.tps = Math.round(u.out / (genMs / 1000)); U.genOut = (U.genOut || 0) + u.out; U.genMs = (U.genMs || 0) + genMs; U.tps = u.tps; }
     this.emit('usage', { step: u, total: U });
   }
