@@ -130,6 +130,14 @@ const stat = http.createServer((req, res) => {
     assert.equal(await page.locator('#menuBtn').isVisible(), false);
     const paneW = await page.locator('#chatPane').evaluate(e => e.getBoundingClientRect().width);
     assert.ok(Math.abs(paneW - 374) < 2, 'chat pane ends at the hinge: ' + paneW);
+    // Long chat: only the chat scroller may scroll, never the page (both panes moved together in 0.3.0).
+    await page.evaluate(() => { const f = document.createElement('div'); f.id = 'filler'; f.style.height = '4000px'; document.querySelector('#log').append(f); const g = f.cloneNode(); g.id = 'filler2'; document.querySelector('#ibody').append(g); });
+    await page.locator('#scroller').evaluate(e => { e.scrollTop = e.scrollHeight; });
+    await page.locator('#filler').evaluate(e => e.scrollIntoView({ block: 'end' })); // scrolls every scrollable ancestor, the page included
+    assert.ok(await page.evaluate(() => document.scrollingElement.scrollHeight <= innerHeight + 1), 'page content fits the viewport');
+    assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), 0, 'page itself must not scroll');
+    assert.ok(await page.evaluate(() => { const r = document.querySelector('#top').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }), 'top bar stays put');
+    await page.evaluate(() => { document.querySelector('#filler').remove(); document.querySelector('#filler2').remove(); });
     const openBefore = await page.locator('.tool.open').count();
     await page.locator('.tool').first().locator('.head').click();
     await page.locator('#ibody .cmdline', { hasText: '$ ls -la && cat README.md' }).waitFor();

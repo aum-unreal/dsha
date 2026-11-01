@@ -25,7 +25,7 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { margin: 0; height: 100%; background: var(--ground); color: var(--text); font: 400 var(--fs-body)/20px var(--font); font-optical-sizing: auto; overscroll-behavior: none; -webkit-font-smoothing: antialiased; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--ground); color: var(--text); font: 400 var(--fs-body)/20px var(--font); font-optical-sizing: auto; overscroll-behavior: none; -webkit-font-smoothing: antialiased; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 input, textarea { font: inherit; color: var(--text); }
 code, pre, .code { font-family: var(--code); }
@@ -36,8 +36,8 @@ svg { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; s
 .icon { width: 44px; height: 44px; display: grid; place-items: center; border-radius: var(--radius-control); color: var(--muted); }
 .icon:active { background: var(--active); color: var(--text); }
 
-#app { height: 100%; display: flex; }
-#chatPane { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100%; position: relative; }
+#app { height: 100%; height: 100dvh; display: flex; overflow: hidden; }
+#chatPane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; height: 100%; position: relative; }
 #inspector, #hinge { display: none; }
 
 /* ---------- top bar ---------- */
@@ -270,8 +270,8 @@ button.pill:active { background: var(--raised); }
 .files li span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 13px var(--code); }
 .iempty { color: var(--faint); margin-top: 16vh; text-align: center; line-height: 22px; }
 
-body.wide #app { display: grid; grid-template-columns: var(--paneL) var(--hingeW) minmax(0, 1fr); }
-body.wide #inspector { display: flex; flex-direction: column; min-width: 0; height: 100%; background: var(--ground); box-shadow: inset 1px 0 var(--border); }
+body.wide #app { display: grid; grid-template-columns: var(--paneL) var(--hingeW) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); } /* the row must not grow with the chat, or the page scrolls both panes together */
+body.wide #inspector { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; background: var(--ground); box-shadow: inset 1px 0 var(--border); }
 body.wide #hinge { display: block; }
 body.wide #menuBtn { display: none; }
 body.wide #top { padding-left: 12px; }
