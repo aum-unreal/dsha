@@ -3,6 +3,8 @@
 // sent back on every assistant turn whenever `tools` is present).
 
 export const DEFAULT_BASE = 'https://api.deepseek.com';
+// A stream that sends nothing for this long (no tokens, no keep-alive) counts as a dropped connection.
+const IDLE_MS = Number(process.env.DSH_IDLE_MS) || 120_000;
 
 // USD per 1M tokens, [peak, off-peak]. Pricing page as of 2026-11-01.
 export const PRICES = {
@@ -22,7 +24,7 @@ export class DeepSeek {
   }
 
   async get(path) {
-    const r = await this.fetch(this.base + path, { headers: { authorization: 'Bearer ' + this.key } });
+    const r = await this.fetch(this.base + path, { headers: { authorization: 'Bearer ' + this.key } }).catch(e => { throw asApiError(e); });
     if (!r.ok) throw new ApiError(r.status, await r.text());
     return r.json();
   }
@@ -38,17 +40,25 @@ export class DeepSeek {
     body.thinking = { type: thinking ? 'enabled' : 'disabled' };
     if (thinking && effort) body.reasoning_effort = effort;
     if (maxTokens) body.max_tokens = maxTokens;
+    // Our own controller, so a silent connection can be cut without stopping the run.
+    const ctl = new AbortController(), stop = () => ctl.abort();
+    signal?.addEventListener('abort', stop, { once: true });
+    let idle = 0; const touch = () => { clearTimeout(idle); idle = setTimeout(() => { ctl.idle = true; ctl.abort(); }, IDLE_MS); };
+    const asErr = e => ctl.idle ? new ApiError(0, `no answer for ${Math.round(IDLE_MS / 1000)} s`, 'network') : asApiError(e);
+    touch();
+    try {
     const r = await this.fetch(this.base + '/chat/completions', {
-      method: 'POST', signal,
+      method: 'POST', signal: ctl.signal,
       headers: { authorization: 'Bearer ' + this.key, 'content-type': 'application/json', accept: 'text/event-stream' },
       body: JSON.stringify(body),
-    });
+    }).catch(e => { throw asErr(e); });
     if (!r.ok) throw new ApiError(r.status, await r.text());
     const msg = { role: 'assistant', content: '', reasoning_content: '' };
     const calls = [];
     let usage = null, finish = null, buf = '';
     const dec = new TextDecoder();
-    for await (const chunk of r.body) {
+    try { for await (const chunk of r.body) {
+      touch();
       buf += dec.decode(chunk, { stream: true });
       let nl;
       while ((nl = buf.indexOf('\n')) >= 0) {
@@ -71,9 +81,10 @@ export class DeepSeek {
           on.toolDelta?.(t.index, cur);
         }
       }
-    }
+    } } catch (e) { throw asErr(e); }
     if (calls.length) msg.tool_calls = calls.filter(Boolean);
     return { message: msg, finish, usage: normUsage(usage) };
+    } finally { clearTimeout(idle); signal?.removeEventListener('abort', stop); }
   }
 }
 
@@ -84,9 +95,21 @@ export function normUsage(u) {
   return { hit, miss, out: u.completion_tokens || 0, reasoning: u.completion_tokens_details?.reasoning_tokens || 0 };
 }
 
+// kind: auth (401/403), balance (402), rate (429), busy (5xx), network (no answer at all), bad (anything else).
+// rate, busy and network are worth retrying; the others need the user.
 export class ApiError extends Error {
-  constructor(status, body) {
+  constructor(status, body, kind) {
     let m = body; try { m = JSON.parse(body).error?.message || body; } catch {}
-    super(`DeepSeek API ${status}: ${String(m).slice(0, 500)}`); this.status = status;
+    super(status ? `DeepSeek API ${status}: ${String(m).slice(0, 500)}` : `Can't reach DeepSeek: ${String(m).slice(0, 500)}`);
+    this.status = status;
+    this.kind = kind || (status === 401 || status === 403 ? 'auth' : status === 402 ? 'balance' : status === 429 ? 'rate' : status >= 500 ? 'busy' : 'bad');
   }
+  get transient() { return ['rate', 'busy', 'network'].includes(this.kind); }
+}
+
+// fetch() rejects with a bare TypeError ("fetch failed") on DNS, TLS or connection errors; name it.
+export function asApiError(e) {
+  if (e instanceof ApiError || e?.name === 'AbortError') return e;
+  const c = e?.cause, why = c?.code || c?.message || e?.message || String(e);
+  return new ApiError(0, why, 'network');
 }

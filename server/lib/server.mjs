@@ -6,13 +6,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { loadConfig, saveConfig, readKey, writeKey, listSessions, createSession, deleteSession, HOME, TEMP_ROOTS, isTemp, USER_HOME } from './store.mjs';
-import { runtime, dropRuntime, activeRuns } from './agent.mjs';
+import { runtime, dropRuntime, activeRuns, apiState } from './agent.mjs';
 import { DeepSeek } from './deepseek.mjs';
 import { Mcp, loadMcpConfig, saveMcpConfig } from './mcp.mjs';
 import { listSkills, readSkill, setSkill, setClaudeSkills, createSkill, deleteSkill, instructionFiles, writeInstructions, listMemory, readMemory, deleteMemory } from './skills.mjs';
 import { systemPrompt } from './agent.mjs';
 
-export const VERSION = '0.5.1';
+export const VERSION = '0.5.2';
 
 export function createServer({ config = loadConfig } = {}) {
   let cfg = config();
@@ -21,7 +21,7 @@ export function createServer({ config = loadConfig } = {}) {
   const deps = { config: getCfg, mcp };
 
   const routes = [
-    ['GET', /^\/api\/health$/, () => ({ ok: true, version: VERSION, hasKey: !!readKey(), model: cfg.model, home: HOME, running: activeRuns(), tempRoots: TEMP_ROOTS, userHome: USER_HOME })],
+    ['GET', /^\/api\/health$/, () => ({ ok: true, version: VERSION, hasKey: !!readKey(), model: cfg.model, home: HOME, running: activeRuns(), tempRoots: TEMP_ROOTS, userHome: USER_HOME, api: apiState })],
     ['GET', /^\/api\/config$/, () => pub(cfg)],
     ['PUT', /^\/api\/config$/, (_, b) => {
       const p = pick(b, ['model', 'effort', 'mode', 'thinking', 'maxSteps', 'cwd', 'base']);
@@ -89,6 +89,7 @@ export function createServer({ config = loadConfig } = {}) {
     }],
     ['DELETE', /^\/api\/sessions\/(\w+)$/, ([id]) => { dropRuntime(id); deleteSession(id); return { ok: true }; }],
     ['POST', /^\/api\/sessions\/(\w+)\/messages$/, ([id], b) => { const text = String(b.text || '').trim(); if (!text) throw httpErr(400, 'Empty message'); const r = rt(id); try { r.send(text); } catch (e) { throw httpErr(409, e.message); } return { ok: true, seq: r.seq }; }],
+    ['POST', /^\/api\/sessions\/(\w+)\/retry$/, ([id]) => { const r = rt(id); try { r.retry(); } catch (e) { throw httpErr(409, e.message); } return { ok: true, seq: r.seq }; }],
     ['POST', /^\/api\/sessions\/(\w+)\/stop$/, ([id]) => { rt(id).stop(); return { ok: true }; }],
     ['POST', /^\/api\/sessions\/(\w+)\/approve$/, ([id], b) => ({ ok: rt(id).approve(String(b.id), ['allow', 'always', 'deny'].includes(b.decision) ? b.decision : 'deny') })],
     ['POST', /^\/api\/sessions\/(\w+)\/compact$/, async ([id]) => { const r = rt(id); if (r.running) throw httpErr(409, 'Stop the run first'); return { ok: await r.compact() }; }],

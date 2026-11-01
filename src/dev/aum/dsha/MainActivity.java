@@ -25,6 +25,12 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
     private static final String DSH = "/data/data/com.termux/files/home/.local/bin/dsh", BASH = "/data/data/com.termux/files/usr/bin/bash";
     private static final int REQ_PAIR = 21, REQ_PERM = 22, REQ_NOTIF = 23;
     private WebView web;
+    // The preview pane is a second WebView laid over the Inspector's page area. It has
+    // no JavascriptInterface at all: a previewed page must never reach the dsh bridge,
+    // the bearer token or the UI's storage. It is shown only in the unfolded layout,
+    // positioned from the rect the web UI measures for #previewHost.
+    private WebView preview;
+    private boolean previewCanBack;
     private FrameLayout root;
     private SharedPreferences prefs;
     private final ExecutorService pool = Executors.newCachedThreadPool();
@@ -42,6 +48,7 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
     private void applyBars(boolean dark) {
         int bg = dark ? 0xff000000 : 0xffffffff;
         root.setBackgroundColor(bg); web.setBackgroundColor(bg);
+        if (preview != null) preview.setBackgroundColor(bg);
         android.view.Window w = getWindow();
         w.setStatusBarColor(bg); w.setNavigationBarColor(bg);
         if (Build.VERSION.SDK_INT >= 30) {
@@ -69,6 +76,10 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         web.setBackgroundColor(0xff000000);
         web.setVerticalScrollBarEnabled(false);
         root.addView(web, new FrameLayout.LayoutParams(-1, -1));
+        preview = buildPreview();
+        FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(1, 1);
+        preview.setVisibility(android.view.View.GONE);
+        root.addView(preview, plp);
         setContentView(root);
         applyBars(prefs.getBoolean("dark", true));
         WebSettings s = web.getSettings();
@@ -100,11 +111,11 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
 
     @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); handleIntent(i); }
     @Override protected void onResume() {
-        super.onResume(); visible = true; js("window.native&&native.resume&&native.resume()");
+        super.onResume(); visible = true; if (preview != null) preview.onResume(); js("window.native&&native.resume&&native.resume()");
         if (hinge != null) sensors.registerListener(this, hinge, android.hardware.SensorManager.SENSOR_DELAY_UI);
         sendPosture(true);
     }
-    @Override protected void onPause() { super.onPause(); visible = false; if (hinge != null) sensors.unregisterListener(this); }
+    @Override protected void onPause() { super.onPause(); visible = false; if (preview != null) preview.onPause(); if (hinge != null) sensors.unregisterListener(this); }
 
     // Fold posture for the UI: hinge angle (TYPE_HINGE_ANGLE, -1 when the device has
     // none) plus the physical screen centre in WebView CSS pixels, which is where a
@@ -125,7 +136,7 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         js("window.native&&native.posture&&native.posture(" + (hinge == null ? -1 : Math.round(hingeAngle)) + "," + geom + ")");
     }
     @Override public void onBackPressed() { js("window.native&&native.back?native.back():0", r -> { if (!"true".equals(r)) super.onBackPressed(); }); }
-    @Override protected void onDestroy() { for (HttpURLConnection c : streams.values()) c.disconnect(); pool.shutdownNow(); web.destroy(); super.onDestroy(); }
+    @Override protected void onDestroy() { for (HttpURLConnection c : streams.values()) c.disconnect(); pool.shutdownNow(); web.destroy(); if (preview != null) preview.destroy(); super.onDestroy(); }
 
     private void handleIntent(Intent i) {
         if (i == null || !Intent.ACTION_SEND.equals(i.getAction())) return;
@@ -145,6 +156,51 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
 
     private void js(String code) { js(code, null); }
     private void js(String code, ValueCallback<String> cb) { main.post(() -> { if (!isDestroyed()) web.evaluateJavascript(code, cb); }); }
+
+    // ---------- the preview pane ----------
+    // A plain WebView: http/https only, no file://, no content://, no bridge. Pages previewed
+    // here are arbitrary code, so it gets less power than the chat view, not more.
+    private WebView buildPreview() {
+        WebView v = new WebView(this);
+        v.setBackgroundColor(0xff000000);
+        WebSettings s = v.getSettings();
+        s.setJavaScriptEnabled(true); s.setDomStorageEnabled(true);
+        s.setAllowFileAccess(false); s.setAllowContentAccess(false);
+        s.setSupportZoom(false);
+        s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE); // dev servers pull http assets
+        v.setWebViewClient(new WebViewClient() {
+            @Override public boolean shouldOverrideUrlLoading(WebView w, WebResourceRequest req) {
+                Uri u = req.getUrl();
+                String scheme = u == null ? null : u.getScheme();
+                if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) return false;
+                try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception ignored) {}
+                return true;
+            }
+            @Override public void onPageStarted(WebView w, String url, android.graphics.Bitmap icon) { postPreviewState(url, true); }
+            @Override public void onPageFinished(WebView w, String url) { postPreviewState(url, false); }
+            @Override public void onReceivedError(WebView w, WebResourceRequest req, WebResourceError err) {
+                if (req.isForMainFrame()) js("window.native&&native.previewError&&native.previewError(" + JSONObject.quote(String.valueOf(err.getDescription())) + ")");
+            }
+        });
+        v.setWebChromeClient(new WebChromeClient() {
+            @Override public void onReceivedTitle(WebView w, String title) { js("window.native&&native.previewTitle&&native.previewTitle(" + JSONObject.quote(title == null ? "" : title) + ")"); }
+            @Override public boolean onConsoleMessage(ConsoleMessage m) {
+                js("window.native&&native.previewConsole&&native.previewConsole(" + JSONObject.quote(m.message() == null ? "" : m.message()) + "," + JSONObject.quote(String.valueOf(m.messageLevel())) + ")");
+                return true;
+            }
+        });
+        return v;
+    }
+    private void postPreviewState(String url, boolean loading) {
+        if (preview != null) previewCanBack = preview.canGoBack();
+        js("window.native&&native.previewState&&native.previewState(" + JSONObject.quote(url == null ? "" : url) + "," + previewCanBack + "," + loading + ")");
+    }
+    private static boolean previewable(String url) {
+        if (url == null) return false;
+        Uri u = Uri.parse(url);
+        String scheme = u.getScheme();
+        return ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) && u.getHost() != null;
+    }
 
     private String base() { return prefs.getString("url", "http://127.0.0.1:8787").replaceAll("/+$", ""); }
     private String token() { return prefs.getString("token", ""); }
@@ -269,6 +325,35 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         @JavascriptInterface public void notify(String title, String text) { main.post(() -> notifyUser(title, text)); }
         @JavascriptInterface public void askNotifications() {
             if (Build.VERSION.SDK_INT >= 33) main.post(() -> requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, REQ_NOTIF));
+        }
+        // Preview pane: the web UI measures #previewHost in CSS px and passes the rect.
+        @JavascriptInterface public boolean previewShow(int left, int top, int width, int height) {
+            if (preview == null || width < 1 || height < 1) return false;
+            float d = getResources().getDisplayMetrics().density;
+            main.post(() -> {
+                FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) preview.getLayoutParams();
+                lp.leftMargin = Math.round(left * d); lp.topMargin = Math.round(top * d);
+                lp.width = Math.max(1, Math.round(width * d)); lp.height = Math.max(1, Math.round(height * d));
+                preview.setLayoutParams(lp);
+                preview.setVisibility(android.view.View.VISIBLE);
+            });
+            return true;
+        }
+        @JavascriptInterface public void previewHide() { main.post(() -> { if (preview != null) preview.setVisibility(android.view.View.GONE); }); }
+        @JavascriptInterface public boolean previewOpen(String url) {
+            if (preview == null || !previewable(url)) return false;
+            main.post(() -> preview.loadUrl(url));
+            return true;
+        }
+        @JavascriptInterface public void previewReload() { main.post(() -> { if (preview != null && preview.getUrl() != null) preview.reload(); }); }
+        @JavascriptInterface public boolean previewBack() {
+            if (preview == null || !previewCanBack) return false;
+            main.post(() -> { if (preview.canGoBack()) preview.goBack(); });
+            return true;
+        }
+        @JavascriptInterface public void previewExternal(String url) {
+            if (!previewable(url)) return;
+            main.post(() -> { try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); } catch (Exception ignored) {} });
         }
         @JavascriptInterface public boolean visible() { return visible; }
     }

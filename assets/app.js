@@ -23,10 +23,10 @@ const I = {
   share: svg('<path d="M12 3v13M7 8l5-5 5 5"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/>'), trash: svg('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'), link: svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
 };
 const MARK = '<svg class="mark" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="6" fill="#fff" stroke="none"/><path d="M6.5 13c1.8-3.4 3.7-3.4 5.5 0s3.7 3.4 5.5 0" stroke="#000" stroke-width="2.2"/></svg>';
-const TOOL_NAME = { bash: 'Shell', read_file: 'Read file', write_file: 'Write file', edit_file: 'Edit file', list_dir: 'List folder', grep: 'Search', glob: 'Find files', web_fetch: 'Fetch', todo_write: 'Task list', skill: 'Skill', session_log: 'Session log' };
+const TOOL_NAME = { bash: 'Shell', read_file: 'Read file', write_file: 'Write file', edit_file: 'Edit file', list_dir: 'List folder', grep: 'Search', glob: 'Find files', web_fetch: 'Fetch', todo_write: 'Task list', skill: 'Skill', session_log: 'Session log', preview: 'Preview' };
 const tname = n => TOOL_NAME[n] || n.replace(/_/g, ' ');
 const TODO_ICON = { completed: I.check, in_progress: I.half, pending: I.circle };
-const TOOL_ICON = { bash: I.term, read_file: I.file, write_file: I.pen, edit_file: I.pen, list_dir: I.folder, grep: I.search, glob: I.search, web_fetch: I.globe, todo_write: I.list, skill: I.book, session_log: I.activity };
+const TOOL_ICON = { bash: I.term, read_file: I.file, write_file: I.pen, edit_file: I.pen, list_dir: I.folder, grep: I.search, glob: I.search, web_fetch: I.globe, todo_write: I.list, skill: I.book, session_log: I.activity, preview: I.globe };
 const MODES = { ask: ['Ask', 'Asks before shell, edits and web fetches'], edits: ['Edits', 'File edits run freely; shell still asks'], auto: ['Auto', 'Everything runs without asking'] };
 
 /* ---------- transport ---------- */
@@ -39,7 +39,7 @@ window.native = {
   end(id, err) { const s = streams.get(id); streams.delete(id); s?.end(err); },
   paired(ok, err) { pairDone?.(ok, err); },
   shared(t) { sharedText(t); },
-  back() { if (document.body.classList.contains('sheet')) { closeSheet(); return true; } if (document.body.classList.contains('paged')) { closePage(); return true; } if (document.body.classList.contains('drawer')) { drawer(false); return true; } return false; },
+  back() { if (previewShown() && previewUrl && window.Native?.previewBack?.()) return true; if (document.body.classList.contains('sheet')) { closeSheet(); return true; } if (document.body.classList.contains('paged')) { closePage(); return true; } if (document.body.classList.contains('drawer')) { drawer(false); return true; } return false; },
   resume() { if (S.cur) resync(); refreshSessions(); },
 };
 const local = { get: k => { try { return localStorage.getItem('dsha.' + k) || ''; } catch { return ''; } }, set: (k, v) => { try { localStorage.setItem('dsha.' + k, v); } catch {} } };
@@ -90,7 +90,7 @@ const md = window.markdownit({ linkify: true, breaks: false, highlight(code, lan
 function renderMd(el, text) {
   el.innerHTML = DOMPurify.sanitize(md.render(text || ''));
   for (const pre of el.querySelectorAll('pre')) { const lang = (pre.querySelector('code')?.className.match(/language-(\w+)/) || [])[1]; if (lang) pre.dataset.lang = lang; const b = h('button', 'cp', I.copy); b.ariaLabel = 'Copy code'; b.onclick = () => copy(pre.querySelector('code')?.innerText || pre.innerText); pre.append(b); }
-  for (const a of el.querySelectorAll('a')) a.target = '_blank';
+  for (const a of el.querySelectorAll('a')) { a.target = '_blank'; if (isLocalUrl(a.href)) a.onclick = e => { if (layout.mode === 'wide') { e.preventDefault(); haptic(); showPreview(a.href); } }; }
 }
 
 /* ---------- state ---------- */
@@ -118,7 +118,20 @@ function build(it) {
       for (const d of ['allow', 'always', 'deny']) e.querySelector('.' + d).onclick = () => decide(it, d);
       return e;
     }
-    case 'notice': return h('div', 'notice' + (it.err ? ' err' : ''));
+    case 'notice': {
+      const e = h('div', 'notice' + (it.err ? ' err' : ''));
+      if (it.url) { e.classList.add('pvlink'); e.onclick = () => { haptic(); layout.mode === 'wide' ? showPreview(it.url) : window.Native?.previewExternal ? window.Native.previewExternal(it.url) : window.open(it.url, '_blank', 'noopener'); }; }
+      return e;
+    }
+    case 'apierr': {
+      const e = h('div', 'apierr', '<b></b><p></p><div class="row"></div>'), row = e.querySelector('.row');
+      if (it.kind2 === 'auth') { const b = h('button', 'primary', 'Open settings'); b.onclick = () => { haptic(); settingsSheet(); }; row.append(b); }
+      else {
+        if (it.kind2 === 'balance') { const b = h('button', null, 'Check balance'); b.onclick = () => { haptic(); usageSheet(); }; row.append(b); }
+        const r = h('button', 'primary', I.retry + 'Retry'); r.onclick = () => retryRun(it); row.append(r);
+      }
+      return e;
+    }
     case 'foot': {
       const e = h('div', 'turnfoot');
       const c = h('button', null, I.copy + 'Copy'); c.onclick = () => copy(it.text());
@@ -155,7 +168,8 @@ function paint(it) {
       e.querySelector('.ask .cmd').textContent = it.name === 'bash' ? it.args?.command : it.name === 'edit_file' ? `${it.args?.path}\n− ${it.args?.old_string}\n+ ${it.args?.new_string}` : it.name === 'write_file' ? `${it.args?.path}\n\n${String(it.args?.content || '').slice(0, 1500)}` : it.summary;
       break;
     }
-    case 'notice': e.textContent = it.text; break;
+    case 'notice': e.textContent = it.text; if (it.url) e.append(h('code', null, esc(it.url))); break;
+    case 'apierr': e.querySelector('b').textContent = API_ERR[it.kind2] || API_ERR.bad; e.querySelector('p').textContent = it.text; break;
   }
 }
 function flushMd() { mdTimer = 0; for (const it of mdQueue) { renderMd(it.el, it.text); it.el.classList.toggle('cursor', !!it.live); } mdQueue.clear(); follow(); }
@@ -200,7 +214,7 @@ function addFoot() {
 }
 
 function apply(ev) {
-  if (ev.seq <= S.seq) return; S.seq = ev.seq;
+  if (ev.seq <= S.seq) return; S.seq = ev.seq; S.lastEv = Date.now();
   const L = last();
   switch (ev.type) {
     case 'run_start': setRunning(true); break;
@@ -227,11 +241,27 @@ function apply(ev) {
     case 'todos': S.todos = ev.todos; todos(); break;
     case 'title': if (S.cur) { S.cur.title = ev.title; header(); } break;
     case 'notice': closeLive(); add({ kind: 'notice', text: ev.text }); break;
-    case 'error': closeLive(); add({ kind: 'notice', err: true, text: ev.message }); break;
+    case 'error':
+      closeLive(); apiErr(ev); haptic();
+      if (!visible()) N?.notify(API_ERR[ev.kind] || API_ERR.bad, String(ev.message).slice(0, 200));
+      break;
+    case 'preview':
+      // dsh opened a page: unfolded, straight into the Preview tab; folded, a line that opens it in the browser.
+      closeLive();
+      if (layout.mode === 'wide') showPreview(ev.url);
+      else add({ kind: 'notice', url: ev.url, text: 'Preview ready. Unfold to see it beside the chat, or tap to open: ' });
+      break;
+    case 'api_retry': {
+      // One line per run, rewritten on each attempt.
+      const text = `${API_ERR[ev.kind] || API_ERR.bad}. Trying again in ${Math.round(ev.wait / 1000)} s (${ev.attempt} of ${ev.of}).`;
+      const n = S.items.findLast(x => x.kind === 'notice' && x.retry);
+      if (n && n === last()) { n.text = text; paint(n); } else { closeLive(); add({ kind: 'notice', retry: true, text }); }
+      break;
+    }
     case 'session': if (S.cur) { Object.assign(S.cur, ev.patch); header(); meter(); } break;
     case 'compacted': load(S.cur.id); break;
     case 'run_end':
-      closeLive(); setRunning(false); addFoot(); refreshSessions(); refreshBalance(true);
+      closeLive(); setRunning(false); addFoot(); refreshSessions(); refreshBalance(true); reloadPreviewAfterRun();
       if (!visible() && ev.reason !== 'stopped') { const t = [...S.items].reverse().find(x => x.kind === 'text'); N?.notify(S.cur?.title || 'dsh', t ? t.text.slice(0, 300) : 'Finished'); }
       break;
   }
@@ -239,6 +269,15 @@ function apply(ev) {
 // Live speed estimate for the model call in flight (about 4 chars a token); the usage event replaces it with the exact figure.
 function countGen(d) { if (S.gen) { S.gen.t0 ||= Date.now(); S.gen.chars += d.length; } }
 const tool = id => S.items.find(x => x.kind === 'tool' && x.id === id);
+
+// DeepSeek failures, by the kind dsh gives them. The card stays at the end of the session until the next run.
+const API_ERR = { network: "Can't reach DeepSeek", busy: 'DeepSeek is overloaded', rate: 'DeepSeek is rate limiting', auth: 'DeepSeek rejected the API key', balance: 'DeepSeek balance is used up', bad: 'DeepSeek refused the request' };
+function apiErr(e) { for (const x of S.items.filter(x => x.kind === 'apierr')) { x.el.remove(); S.items.splice(S.items.indexOf(x), 1); } return add({ kind: 'apierr', kind2: e.kind || 'bad', text: e.message }); }
+async function retryRun(it) {
+  haptic(); if (S.running) return;
+  try { await api('POST', `/api/sessions/${S.cur.id}/retry`); it.el.remove(); S.items.splice(S.items.indexOf(it), 1); strip(); }
+  catch (e) { toast(e.message); }
+}
 
 async function decide(it, d) {
   haptic();
@@ -254,6 +293,7 @@ async function load(id) {
   S.cur = s; S.seq = s.live.fromSeq; S.todos = s.todos || []; S.sel = null;
   local.set('last', id);
   fromMessages(s.messages, s.meta);
+  if (s.meta?.error && !s.live.running) apiErr(s.meta.error);
   setRunning(s.live.running);
   header(); meter(); todos(); renderSessions(); emptyState();
   stick = true; requestAnimationFrame(() => { scroller.scrollTop = scroller.scrollHeight; });
@@ -378,13 +418,14 @@ function drawStrip() {
   const bar = $('#run'), segs = $('#runSegs');
   const lt = S.items.map(x => x.kind).lastIndexOf('user');
   const steps = (lt < 0 ? [] : S.items.slice(lt + 1)).filter(x => x.kind === 'think' || x.kind === 'tool' || x.kind === 'text');
-  bar.classList.toggle('on', !!steps.length && (S.running || !!S.cur));
-  if (!steps.length) { segs.textContent = ''; $('#runText').textContent = ''; return; }
+  const failed = !S.running && last()?.kind === 'apierr';
+  bar.classList.toggle('on', (!!steps.length || failed) && (S.running || !!S.cur));
+  if (!steps.length) { segs.textContent = ''; $('#runText').innerHTML = failed ? `<b>Failed</b> · ${esc(API_ERR[last().kind2] || API_ERR.bad)}` : ''; return; }
   const now = Date.now(), dur = x => x.ms ?? (x.t0 ? now - x.t0 : 1200);
   const cur = steps[steps.length - 1], w = waitingTool(), tools = steps.filter(x => x.kind === 'tool').length;
   const total = steps.reduce((a, x) => a + (x.ms ?? (x.t0 ? now - x.t0 : 0)), 0);
-  $('#runText').innerHTML = w ? `<b>Needs you</b> · ${esc(tname(w.name))}`
-    : S.running ? (cur.kind === 'think' && cur.live ? '<b>Thinking</b>' : cur.kind === 'tool' && cur.status === 'run' ? `<b>${esc(tname(cur.name))}</b>` : cur.live ? '<b>Writing</b>' : '<b>Working</b>') + (liveTps() ? ` · ~${liveTps()} tok/s` : total ? ' · ' + fmtMs(Math.round(total / 100) * 100) : '')
+  $('#runText').innerHTML = w ? `<b>Needs you</b> · ${esc(tname(w.name))}` : failed ? `<b>Failed</b> · ${esc(API_ERR[last().kind2] || API_ERR.bad)}`
+    : S.running ? (cur.kind === 'think' && cur.live ? '<b>Thinking</b>' : cur.kind === 'tool' && cur.status === 'run' ? `<b>${esc(tname(cur.name))}</b>` : cur.live ? '<b>Writing</b>' : waitText()) + (/Waiting/.test(waitText()) && !cur.live && cur.status !== 'run' ? '' : liveTps() ? ` · ~${liveTps()} tok/s` : total ? ' · ' + fmtMs(Math.round(total / 100) * 100) : '')
     : `${tools} tool call${tools === 1 ? '' : 's'}${total ? ' · ' + fmtMs(Math.round(total / 100) * 100) : ''}`;
   // A segment needs 6px plus a 2px gap; 9px leaves slack. On a long run the newest steps keep their own segment and
   // everything before them folds into one, so the strip never spills under its label.
@@ -409,6 +450,11 @@ function drawStrip() {
   });
 }
 setInterval(() => { if (S.running) strip(); }, 1000);
+// Between steps dsh is waiting on DeepSeek; say so, and how long, so a slow network doesn't look like a frozen app.
+function waitText() {
+  const s = Math.round((Date.now() - (S.lastEv || Date.now())) / 1000);
+  return s < 3 ? '<b>Working</b>' : `<b>Waiting for DeepSeek</b> · ${s} s`;
+}
 
 /* ---------- composer ---------- */
 const input = $('#input');
@@ -486,14 +532,14 @@ const kb = n => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
 
 function agentPage(tab = S.ptab || 'plugins') {
   S.ptab = tab; drawer(false); closeSheet();
-  const page = $('#page'); page.hidden = false; document.body.classList.add('paged');
+  const page = $('#page'); page.hidden = false; document.body.classList.add('paged'); syncPreview();
   $('#pageSub').textContent = 'For ' + short(pageCwd());
   $('#ptabs').innerHTML = PTABS.map(([k, l]) => `<button role="tab" data-t="${k}" class="${k === tab ? 'on' : ''}" aria-selected="${k === tab}">${l}</button>`).join('');
   $('#ptabs').querySelectorAll('button').forEach(b => b.onclick = () => { haptic(); agentPage(b.dataset.t); });
   $('#pbody').scrollTop = 0;
   ({ plugins: pluginsTab, skills: skillsTab, memory: memoryTab, instructions: instructionsTab })[tab]();
 }
-function closePage() { $('#page').hidden = true; document.body.classList.remove('paged'); }
+function closePage() { $('#page').hidden = true; document.body.classList.remove('paged'); syncPreview(); }
 const pbody = html => { if (html != null) $('#pbody').innerHTML = html; return $('#pbody'); };
 const pageOn = t => !$('#page').hidden && S.ptab === t;
 
@@ -673,7 +719,7 @@ function instructionEditor(f) {
 }
 
 /* ---------- drawer & sheets ---------- */
-function drawer(on) { document.body.classList.toggle('drawer', on); $('#drawer').ariaHidden = !on; if (on) { refreshSessions(); refreshBalance(); } }
+function drawer(on) { document.body.classList.toggle('drawer', on); $('#drawer').ariaHidden = !on; if (on) { refreshSessions(); refreshBalance(); } syncPreview(); }
 document.querySelector('.brand').innerHTML = MARK + '<span>DSHA</span>';
 $('#menuBtn').innerHTML = I.menu; $('#menuBtn').onclick = () => { haptic(); drawer(true); };
 $('#moreBtn').innerHTML = I.more; $('#moreBtn').onclick = () => { haptic(); optionsSheet(); };
@@ -691,9 +737,10 @@ $('#cwdChip').onclick = () => S.cur && pickDir(S.cur.cwd, d => patch({ cwd: d })
 function sheet(html, actions = {}) {
   const b = $('#sheetBody'); b.innerHTML = html; $('#sheet').hidden = false; document.body.classList.add('sheet');
   b.querySelectorAll('[data-a]').forEach(el => el.addEventListener('click', e => { haptic(); actions[el.dataset.a]?.(el, e); }));
+  syncPreview();
   return b;
 }
-function closeSheet() { $('#sheet').hidden = true; document.body.classList.remove('sheet'); }
+function closeSheet() { $('#sheet').hidden = true; document.body.classList.remove('sheet'); syncPreview(); }
 const seg = (name, opts, cur) => `<div class="seg">${opts.map(([v, l]) => `<button data-a="${name}" data-v="${v}" class="${String(v) === String(cur) ? 'on' : ''}">${l}</button>`).join('')}</div>`;
 
 function modeSheet() {
@@ -853,6 +900,7 @@ function paintFull() {
 }
 function setChatFull(on) {
   chatFull = !!on; local.set('chatFull', chatFull ? '1' : '0'); paintFull();
+  syncPreview();
   requestAnimationFrame(follow);
 }
 function relayout() {
@@ -872,6 +920,7 @@ function relayout() {
   for (const m of ['wide', 'tabletop']) document.body.classList.toggle(m, mode === m);
   paintFull();
   if (changed) { if (mode === 'wide') { drawer(false); for (const t of S.items) t.el?.classList.remove('open'); } if (mode !== 'wide') S.sel = null; for (const t of S.items) if (t.kind === 'tool') paint(t); ui(true); requestAnimationFrame(follow); }
+  syncPreview();
 }
 addEventListener('resize', relayout);
 window.viewport?.addEventListener?.('segmentschange', relayout);
@@ -882,26 +931,128 @@ function ui(now) {
   if (now) return renderUI();
   if (!uiQueued) { uiQueued = true; requestAnimationFrame(() => { uiQueued = false; renderUI(); }); }
 }
-function renderUI() { if (layout.mode === 'wide') inspector(); else if (layout.mode === 'tabletop') deckLive(); }
+function renderUI() { if (layout.mode === 'wide') inspector(); else if (layout.mode === 'tabletop') deckLive(); syncPreview(); }
 
 const waitingTool = () => S.items.find(x => x.kind === 'tool' && x.status === 'waiting');
 const focusTool = () => S.items.find(x => x.id === S.sel) || [...S.items].reverse().find(x => x.kind === 'tool');
 const liveThink = () => { const l = [...S.items].reverse().find(x => x.kind !== 'notice'); return l?.kind === 'think' && l.live ? l : null; };
 const tail = (t, n = 6000) => (t = String(t || ''), t.length > n ? '…' + t.slice(-n) : t);
 
+
+/* ---------- preview pane ---------- */
+// Preview is a real browser pane, not an iframe: the native side lays a second
+// WebView (no bridge, http/https only) over #previewHost at the rect measured
+// here. The HTML underneath is the toolbar, the empty state and the status line.
+const preview = { url: '', title: '', loading: false, canBack: false, error: '', console: '' };
+let previewUrl = local.get('previewUrl') || '';
+const previewShown = () => S.itab === 'preview' && layout.mode === 'wide' && !chatFull;
+const overlaysOpen = () => ['sheet', 'paged', 'drawer'].some(c => document.body.classList.contains(c));
+let pvRaf = 0;
+
+function syncPreview() {
+  if (pvRaf) cancelAnimationFrame(pvRaf);
+  pvRaf = requestAnimationFrame(() => {
+    pvRaf = 0;
+    const host = $('#previewHost');
+    if (!host || !previewUrl || !previewShown() || overlaysOpen()) { window.Native?.previewHide?.(); return; }
+    const r = host.getBoundingClientRect();
+    if (r.width < 40 || r.height < 40) { window.Native?.previewHide?.(); return; }
+    window.Native?.previewShow?.(Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height));
+  });
+}
+
+function renderPreviewBar() {
+  const input = $('#pvUrl');
+  if (input && document.activeElement !== input) input.value = preview.url || previewUrl;
+  const st = $('#pvStatus');
+  if (st) {
+    if (preview.error) st.innerHTML = `<span class="pv-err">${esc(preview.error)}</span>`;
+    else if (!(preview.url || previewUrl)) st.textContent = 'No page loaded';
+    else st.textContent = (preview.title || preview.url || previewUrl) + (preview.loading ? ' · loading' : '');
+  }
+  const c = $('#pvConsole');
+  if (c) c.textContent = preview.console;
+}
+
+function previewBody(box) {
+  box.dataset.tab = 'preview';
+  const u = preview.url || previewUrl;
+  box.innerHTML = `
+    <form id="pvForm" autocomplete="off">
+      <input id="pvUrl" type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" placeholder="http://127.0.0.1:5173" aria-label="Preview URL" value="${esc(u)}">
+      <button class="pill" type="submit">Go</button>
+    </form>
+    <div id="previewHost"><div class="pv-empty"><span class="pv-glyph">${I.globe}</span><b>Nothing loaded</b><span>A page you are building, or a local dev server. http and https only.</span></div></div>
+    <div id="pvFoot"><span id="pvStatus"></span><button class="icon" id="pvReload" type="button" aria-label="Reload preview">${I.retry}</button><button class="icon" id="pvOut" type="button" aria-label="Open in browser">${I.link}</button></div>`;
+  $('#pvForm').onsubmit = e => { e.preventDefault(); haptic(); openPreview($('#pvUrl').value); };
+  $('#pvReload').onclick = () => { haptic(); if (!previewUrl) return; preview.loading = true; renderPreviewBar(); window.Native?.previewReload?.(); };
+  $('#pvOut').onclick = () => { haptic(); const u = preview.url || previewUrl; if (!u) return; if (window.Native?.previewExternal) window.Native.previewExternal(u); else window.open(u, '_blank', 'noopener'); };
+  renderPreviewBar();
+  syncPreview();
+}
+
+// Pages on this phone or the local network, which a link tap should show in the pane rather than leave the app for.
+const isLocalUrl = u => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) && /^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\]|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|[\w-]+\.local)$/.test(x.hostname); } catch { return false; } };
+function showPreview(url) {
+  if (chatFull) setChatFull(false);
+  drawer(false); S.itab = 'preview'; ui(true);
+  openPreview(url);
+}
+function openPreview(raw) {
+  let u = String(raw || '').trim();
+  if (!u) { preview.error = 'Enter a URL first.'; renderPreviewBar(); return; }
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(u)) u = 'http://' + u;
+  let parsed = null;
+  try { parsed = new URL(u); } catch {}
+  if (!parsed || !/^https?:$/.test(parsed.protocol)) { preview.error = 'Only http and https pages can be previewed.'; renderPreviewBar(); return; }
+  previewUrl = parsed.href; local.set('previewUrl', previewUrl);
+  preview.error = ''; preview.loading = true; preview.title = ''; preview.console = '';
+  renderPreviewBar();
+  syncPreview();
+  const ok = window.Native?.previewOpen?.(previewUrl);
+  if (ok === false) { preview.error = 'That URL cannot be previewed.'; preview.loading = false; }
+  else if (!window.Native) preview.loading = false; // browser: the pane is a placeholder
+  renderPreviewBar();
+}
+
+window.native.previewState = (url, canBack, loading) => {
+  if (url && /^https?:/i.test(url)) { preview.url = url; previewUrl = url; local.set('previewUrl', url); }
+  preview.canBack = !!canBack; preview.loading = !!loading;
+  if (!loading) preview.error = '';
+  renderPreviewBar();
+};
+window.native.previewTitle = t => { preview.title = String(t || ''); renderPreviewBar(); };
+window.native.previewError = e => { preview.error = String(e || ''); preview.loading = false; renderPreviewBar(); };
+window.native.previewConsole = (msg, level) => {
+  preview.console = String(level || '').toLowerCase().replace('consolemessagel', 'l') + ': ' + String(msg || '');
+  preview.console = preview.console.length > 90 ? preview.console.slice(0, 89) + '…' : preview.console;
+  renderPreviewBar();
+};
+
+// After a run, a local dev server has probably changed: reload it in place.
+function reloadPreviewAfterRun() {
+  if (!previewUrl || layout.mode !== 'wide' || S.itab !== 'preview') return;
+  let host = '';
+  try { host = new URL(previewUrl).hostname; } catch { return; }
+  if (host === '127.0.0.1' || host === 'localhost') window.Native?.previewReload?.();
+}
+
 S.itab = 'activity';
 function inspector() {
-  const tabs = [['activity', I.activity, 'Activity'], ['tasks', I.list, 'Tasks'], ['stats', I.chart, 'Session'], ['sessions', I.folder, 'Sessions']];
+  const tabs = [['activity', I.activity, 'Activity'], ['tasks', I.list, 'Tasks'], ['stats', I.chart, 'Session'], ['sessions', I.folder, 'Sessions'], ['preview', I.globe, 'Preview']];
   const nt = (S.todos || []).filter(x => x.status !== 'completed').length;
   const nav = $('#itabs');
   const sig = S.itab + nt + !!waitingTool();
   if (nav.dataset.sig !== sig) {
     nav.dataset.sig = sig;
-    nav.innerHTML = tabs.map(([k, ic, l]) => `<button role="tab" data-t="${k}" class="${S.itab === k ? 'on' : ''}">${l}${k === 'tasks' && nt ? `<span class="count">${nt}</span>` : ''}${k === 'activity' && waitingTool() ? '<span class="count need">Needs you</span>' : ''}</button>`).join('');
-    nav.querySelectorAll('button').forEach(b => b.onclick = () => { haptic(); S.itab = b.dataset.t; nav.dataset.sig = ''; inspector(); });
+    nav.innerHTML = tabs.map(([k, ic, l]) => `<button role="tab" data-t="${k}" class="${S.itab === k ? 'on' : ''}" aria-selected="${S.itab === k}">${l}${k === 'tasks' && nt ? `<span class="count">${nt}</span>` : ''}${k === 'activity' && waitingTool() ? '<span class="count need">Needs you</span>' : ''}</button>`).join('');
+    nav.querySelectorAll('button').forEach(b => b.onclick = () => { haptic(); S.itab = b.dataset.t; nav.dataset.sig = ''; inspector(); syncPreview(); });
+    requestAnimationFrame(() => nav.querySelector('.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
   }
   const box = $('#ibody'), keepScroll = box.scrollTop, atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.classList.toggle('previewing', S.itab === 'preview');
   if (S.itab === 'sessions') { if (box.dataset.tab !== 'sessions') { box.dataset.tab = 'sessions'; renderSessions(box); } return; }
+  if (S.itab === 'preview') { if (box.dataset.tab !== 'preview' || !$('#previewHost')) previewBody(box); else renderPreviewBar(); return; }
   box.dataset.tab = S.itab;
   if (S.itab === 'activity') {
     const th = liveThink(), t = focusTool(), live = S.running && !S.sel;

@@ -22,8 +22,10 @@ const mock = http.createServer((req, res) => {
   let b = ''; req.on('data', d => b += d); req.on('end', async () => {
     if (req.url === '/models') return res.end(JSON.stringify({ data: [{ id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }] }));
     if (req.url === '/user/balance') return res.end(JSON.stringify({ balance_infos: [{ currency: 'USD', total_balance: '5.73' }] }));
+    const next = script.shift();
+    if (typeof next === 'function') return next(res);
     res.writeHead(200, { 'content-type': 'text/event-stream' });
-    for (const c of script.shift() || [delta({ content: 'ok' })]) { res.write(`data: ${JSON.stringify(c)}\n\n`); await new Promise(r => setTimeout(r, 8)); }
+    for (const c of next || [delta({ content: 'ok' })]) { res.write(`data: ${JSON.stringify(c)}\n\n`); await new Promise(r => setTimeout(r, 8)); }
     res.end('data: [DONE]\n\n');
   });
 });
@@ -54,7 +56,7 @@ const stat = http.createServer((req, res) => {
   const mem = path.join(tmp, 'home', 'memory'); fs.mkdirSync(mem, { recursive: true });
   fs.writeFileSync(path.join(mem, 'fold-phone.md'), '---\nname: fold-phone\ndescription: User is on a Galaxy Z Fold; judge layouts at 750 CSS px\ntype: user\n---\nInner screen about 750 CSS px wide.\n');
   fs.writeFileSync(path.join(mem, 'MEMORY.md'), '- [Fold phone](fold-phone.md) — judge layouts at 750px\n');
-  const dsh = spawn(process.execPath, [path.resolve(__dirname, '../server/dsh.mjs'), 'serve'], { env: { ...process.env, HOME: tmp, DSH_TEMP_ROOTS: path.join(tmp, 'scratch'), DSH_HOME: path.join(tmp, 'home'), DSH_KEY_FILE: path.join(tmp, 'key') }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const dsh = spawn(process.execPath, [path.resolve(__dirname, '../server/dsh.mjs'), 'serve'], { env: { ...process.env, HOME: tmp, DSH_TEMP_ROOTS: path.join(tmp, 'scratch'), DSH_RETRY_WAITS: '300', DSH_HOME: path.join(tmp, 'home'), DSH_KEY_FILE: path.join(tmp, 'key') }, stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise(r => dsh.stdout.once('data', r));
   const browser = await chromium.launch({ ...launch(), headless: true });
   const ctx = await browser.newContext({ viewport: { width: 412, height: 860 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
@@ -164,6 +166,65 @@ const stat = http.createServer((req, res) => {
     await page.screenshot({ path: shot('unfolded-stats') });
     await page.locator('#itabs button', { hasText: 'Activity' }).click();
 
+    // Preview: the Inspector's Preview tab positions the native pane over #previewHost.
+    await page.evaluate(() => {
+      window.__pv = { show: [], hide: 0, open: [], reload: 0 };
+      window.Native = {
+        previewShow: (l, t, w, h) => { window.__pv.show.push([l, t, w, h]); return true; },
+        previewHide: () => { window.__pv.hide++; },
+        previewOpen: u => { window.__pv.open.push(u); return true; },
+        previewReload: () => { window.__pv.reload++; },
+        previewExternal: () => {},
+      };
+    });
+    await page.locator('#itabs [data-t=preview]').click();
+    await page.locator('#pvUrl').waitFor();
+    assert.ok(await page.locator('.pv-empty').isVisible());
+    await page.locator('#pvUrl').fill('127.0.0.1:5173');
+    await page.locator('#pvForm button[type=submit]').click(); await page.waitForTimeout(250);
+    assert.equal((await page.evaluate(() => window.__pv.open)).pop(), 'http://127.0.0.1:5173/');
+    const hostBox = await page.locator('#previewHost').boundingBox();
+    const pane = await page.evaluate(() => window.__pv.show.at(-1));
+    assert.ok(pane, 'the native pane is positioned');
+    assert.ok(Math.abs(pane[0] - Math.round(hostBox.x)) <= 1 && Math.abs(pane[1] - Math.round(hostBox.y)) <= 1, 'pane sits on the host rect: ' + pane + ' vs ' + JSON.stringify(hostBox));
+    assert.ok(pane[2] > 150 && pane[3] > 200, 'pane fills the Inspector: ' + pane);
+    await page.evaluate(() => { window.native.previewState('http://127.0.0.1:5173/', false, false); window.native.previewTitle('My app'); });
+    assert.match(await page.locator('#pvStatus').textContent(), /My app/);
+    // Switching tabs hides the pane, and so does anything that covers the Inspector.
+    await page.locator('#itabs [data-t=activity]').click(); await page.waitForTimeout(200);
+    const hid = await page.evaluate(() => window.__pv.hide);
+    assert.ok(hid > 0, 'leaving the tab hides the pane');
+    await page.locator('#itabs [data-t=preview]').click(); await page.waitForTimeout(200);
+    const shown = await page.evaluate(() => window.__pv.show.length);
+    await page.getByRole('button', { name: 'Session options' }).click(); await page.waitForTimeout(200);
+    assert.ok((await page.evaluate(() => window.__pv.hide)) > hid, 'a sheet over the Inspector hides the pane');
+    await page.locator('#scrim').click({ position: { x: 200, y: 60 } }); await page.waitForTimeout(250);
+    assert.ok((await page.evaluate(() => window.__pv.show.length)) > shown, 'closing the sheet brings it back');
+    await page.screenshot({ path: shot('unfolded-preview') });
+    // Fullscreen chat gives the pane up too, and restores it on the way back.
+    await page.locator('#fsBtn').click(); await page.waitForTimeout(200);
+    assert.ok((await page.evaluate(() => window.__pv.hide)) > hid, 'fullscreen chat hides the pane');
+    await page.locator('#fsBtn').click(); await page.waitForTimeout(250);
+    assert.ok(await page.locator('#previewHost').isVisible());
+    // Only http(s) reaches the native pane.
+    await page.locator('#pvUrl').fill('javascript:alert(1)');
+    await page.locator('#pvForm button[type=submit]').click(); await page.waitForTimeout(150);
+    assert.match(await page.locator('#pvStatus').textContent(), /http and https/);
+    await page.locator('#pvUrl').fill('http://127.0.0.1:5173');
+    await page.locator('#itabs button', { hasText: 'Activity' }).click();
+    // dsh can open a page itself: the Preview tab comes forward with it, and local links in replies open there too.
+    await page.evaluate(() => window.native.posture(180, 374, 440));
+    script = [[delta({ tool_calls: [{ index: 0, id: 'pv1', type: 'function', function: { name: 'preview', arguments: '{"url":"http://127.0.0.1:4321"}' } }] })], [delta({ content: 'Running at http://localhost:4321/about now.' })]];
+    await page.locator('#input').fill('Start the site and show me');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await page.locator('.md', { hasText: 'Running at' }).waitFor();
+    assert.equal(await page.locator('#itabs [data-t=preview]').getAttribute('aria-selected'), 'true');
+    assert.equal((await page.evaluate(() => window.__pv.open)).includes('http://127.0.0.1:4321/'), true);
+    await page.locator('#itabs button', { hasText: 'Activity' }).click();
+    await page.locator('.md a', { hasText: 'localhost:4321' }).click(); await page.waitForTimeout(200);
+    assert.equal((await page.evaluate(() => window.__pv.open)).pop(), 'http://localhost:4321/about');
+    await page.locator('#itabs button', { hasText: 'Activity' }).click();
+
     // Fullscreen chat: the Inspector and hinge step aside, chat takes the unfolded screen.
     await page.locator('#fsBtn').click(); await page.waitForTimeout(250);
     assert.ok(await page.evaluate(() => document.body.classList.contains('chatfull')));
@@ -239,6 +300,21 @@ const stat = http.createServer((req, res) => {
     await page.getByRole('button', { name: 'Use home folder' }).click();
     await page.locator('#tempBar').waitFor({ state: 'hidden' });
     assert.equal(await page.locator('#cwdChip').textContent(), '~');
+
+    // DeepSeek trouble: one quiet retry, then an error card that survives a reload and retries in place.
+    const busy = res => { res.writeHead(503, { 'content-type': 'application/json' }); res.end('{"error":{"message":"Server overloaded, please try again later"}}'); };
+    script = [busy, busy, [delta({ content: 'Back online.' })]];
+    await page.locator('#input').fill('Are you there?');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await page.locator('.notice', { hasText: 'Trying again in' }).waitFor();
+    await page.locator('.apierr', { hasText: 'DeepSeek is overloaded' }).waitFor({ timeout: 10000 });
+    assert.match(await page.locator('#runText').textContent(), /Failed/);
+    await page.reload(); await page.locator('.apierr', { hasText: '503' }).waitFor();
+    await page.waitForTimeout(250); await page.screenshot({ path: shot('api-error') });
+    await page.locator('.apierr').getByRole('button', { name: 'Retry' }).click();
+    await page.locator('.md', { hasText: 'Back online.' }).waitFor();
+    assert.equal(await page.locator('.apierr').count(), 0);
+    assert.equal(await page.locator('.msg.user', { hasText: 'Are you there?' }).count(), 1);
 
     // Agent setup page: plugins, skills, instruction files.
     await page.getByRole('button', { name: 'Sessions' }).click(); await page.waitForTimeout(250);

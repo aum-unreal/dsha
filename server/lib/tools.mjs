@@ -157,6 +157,17 @@ export const TOOLS = {
       return clip(sessionDigest(s), 30000);
     },
   },
+  preview: {
+    risk: 'read',
+    description: "Show a web page in the app's preview pane, the browser beside the chat on the unfolded phone: a dev server you started (http://127.0.0.1:<port>) or any http(s) page. Start the server in the background first (nohup ... &) and check it answers. Use after building or changing a page so the user sees it.",
+    parameters: { type: 'object', properties: { url: { type: 'string', description: 'http or https URL' } }, required: ['url'] },
+    async run(a, ctx) {
+      let u; try { u = new URL(String(a.url || '').trim()); } catch { throw new Error('Not a URL: ' + a.url); }
+      if (!/^https?:$/.test(u.protocol)) throw new Error('Only http and https pages can be previewed');
+      ctx.preview?.(u.href);
+      return `Opened ${u.href} in the preview pane. On the unfolded screen it shows beside the chat; folded, the user gets a link to it.`;
+    },
+  },
   skill: {
     risk: 'read',
     description: 'Load a skill: the full instructions for a kind of task, listed under "Skills" in the system prompt. Load the matching skill before starting such a task, then follow it.',
@@ -200,7 +211,7 @@ export function summarize(name, a = {}) {
     case 'read_file': case 'write_file': case 'edit_file': case 'list_dir': return a.path || '.';
     case 'grep': return `${a.pattern}${a.path ? ' in ' + a.path : ''}`;
     case 'glob': return a.pattern;
-    case 'web_fetch': return a.url;
+    case 'web_fetch': case 'preview': return a.url;
     case 'todo_write': return `${(a.todos || []).length} items`;
     case 'skill': return a.name;
     case 'session_log': return a.list ? 'recent sessions' : a.id || 'this session';

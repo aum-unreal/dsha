@@ -146,6 +146,15 @@ svg { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; s
 .ask .row button:active, .primary:active, .secondary:active { transform: scale(.98); }
 
 .notice { align-self: center; font-size: 12px; color: var(--faint); text-align: center; }
+.notice.pvlink { font-size: 13px; color: var(--muted); padding: 8px 12px; border-radius: var(--radius-control); background: var(--raised); cursor: pointer; }
+.notice.pvlink code { color: var(--text); font: 400 12px/18px var(--code); }
+.apierr { align-self: stretch; background: var(--pill-negative-bg); color: var(--pill-negative-ink); border-radius: var(--radius-inner); padding: 12px 14px; }
+.apierr b { display: block; font-size: 15px; font-weight: 600; }
+.apierr p { margin: 4px 0 10px; font-size: 13px; line-height: 18px; word-break: break-word; opacity: .85; }
+.apierr .row { display: flex; gap: 8px; justify-content: flex-end; }
+.apierr button { display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 16px; border-radius: var(--radius-control); font-weight: 600; box-shadow: inset 0 0 0 1px var(--pill-negative-ink); }
+.apierr button.primary { box-shadow: none; }
+.apierr button svg { width: 16px; height: 16px; }
 .notice.err { align-self: stretch; text-align: left; font-size: 14px; background: var(--pill-negative-bg); color: var(--pill-negative-ink); border-radius: var(--radius-inner); padding: 10px 14px; white-space: pre-wrap; }
 .turnfoot { display: flex; gap: 4px; margin: -8px 0 4px -10px; }
 .turnfoot button { height: 36px; padding: 0 10px; border-radius: var(--radius-control); color: var(--faint); display: flex; align-items: center; gap: 6px; font-size: 13px; }
@@ -295,6 +304,28 @@ button.pill:active { background: var(--raised); }
 .files li:first-child { border-top: 0; }
 .files li span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 13px var(--code); }
 .iempty { color: var(--faint); margin-top: 16vh; text-align: center; line-height: 22px; }
+
+
+/* ---------- inspector: the preview tab ----------
+   The native side draws a second WebView over #previewHost, so the HTML here is
+   only the toolbar, the empty state and the status line. */
+#itabs { overflow-x: auto; scrollbar-width: none; }
+#itabs::-webkit-scrollbar { display: none; }
+#itabs button { flex: none; }
+#ibody.previewing { display: flex; flex-direction: column; overflow: hidden; }
+#pvForm { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex: none; }
+#pvUrl { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border: 0; border-radius: var(--radius-control); background: var(--raised); color: var(--text); font: 400 13px/18px var(--code); }
+#pvUrl::placeholder { color: var(--faint); }
+#previewHost { position: relative; flex: 1; min-height: 0; border-radius: var(--radius-card); background: var(--surface); overflow: hidden; }
+.pv-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: var(--faint); }
+.pv-empty .pv-glyph svg { width: 28px; height: 28px; stroke: var(--faint); }
+.pv-empty b { font: 500 14px/20px var(--font); color: var(--muted); }
+.pv-empty span { font-size: 12px; line-height: 18px; max-width: 30ch; }
+#pvFoot { display: flex; align-items: center; gap: 4px; padding-top: 10px; flex: none; min-height: 18px; font-size: 12px; line-height: 18px; color: var(--faint); }
+#pvStatus { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#pvFoot .icon { width: 32px; height: 32px; }
+#pvFoot .icon svg { width: 16px; height: 16px; }
+.pv-err { color: var(--warning); }
 
 body.wide #app { display: grid; grid-template-columns: var(--paneL) var(--hingeW) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); } /* the row must not grow with the chat, or the page scrolls both panes together */
 body.wide #inspector { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; background: var(--ground); box-shadow: inset 1px 0 var(--border); }

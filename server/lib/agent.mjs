@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { DeepSeek, cost } from './deepseek.mjs';
+import { DeepSeek, cost, asApiError } from './deepseek.mjs';
 import { TOOLS, schemas, summarize, clip } from './tools.mjs';
 import { contextFiles, skillPrompt, memoryPrompt } from './skills.mjs';
 import { saveSession, loadSession, readKey } from './store.mjs';
@@ -13,6 +13,15 @@ import { saveSession, loadSession, readKey } from './store.mjs';
 const runtimes = new Map();
 const MAX_EVENTS = 20000;
 const COMPACT_AT = 700_000; // prompt tokens; models have a 1M window
+// A model call that fails before anything streams is retried after these waits (ms) when the failure is
+// transient (rate limit, 5xx, no connection). DSH_RETRY_WAITS overrides them, for tests.
+const RETRY_WAITS = (process.env.DSH_RETRY_WAITS ?? '2000,5000,12000').split(',').filter(Boolean).map(Number);
+const sleep = (ms, signal) => new Promise(res => { const t = setTimeout(res, ms); signal?.addEventListener('abort', () => { clearTimeout(t); res(); }, { once: true }); });
+
+// The last DeepSeek call across all sessions, for /api/health, so the app can say DeepSeek isn't answering
+// without opening the session that hit it.
+export const apiState = { ok: true, at: 0, kind: null, message: null };
+const noteApi = e => Object.assign(apiState, e ? { ok: false, at: Date.now(), kind: e.kind || 'bad', message: String(e.message || e) } : { ok: true, at: Date.now(), kind: null, message: null });
 
 export function runtime(id, deps) {
   let rt = runtimes.get(id);
@@ -62,17 +71,35 @@ export class Runtime {
   }
   save() { saveSession(this.s); }
 
-  send(text) {
+  send(text) { this.start(text); }
+
+  // Run again from where a failed run stopped: the last message is the user's or a tool result.
+  retry() {
+    const role = this.s.messages.at(-1)?.role;
+    if (role !== 'user' && role !== 'tool') throw new Error('Nothing to retry: the last reply finished');
+    this.start(null);
+  }
+
+  start(text) {
     if (this.running) throw new Error('A run is already in progress');
     if (!readKey()) throw new Error('No DeepSeek API key. Set one in DSHA settings or write it to ~/.config/deepseek/key');
     this.runBase = this.s.messages.length;
     this.running = true; this.abort = new AbortController();
-    this.runSeq = this.emit('run_start', { runBase: this.runBase }).seq;
-    this.s.messages.push({ role: 'user', content: text });
-    if (this.s.title === 'New session') { this.s.title = text.replace(/\s+/g, ' ').trim().slice(0, 60) || 'Session'; this.emit('title', { title: this.s.title }); }
-    this.emit('user', { text });
+    this.runSeq = this.emit('run_start', { runBase: this.runBase, retry: text == null }).seq;
+    // A failed run's error stays on the session (a reopened app still shows it) until the next run.
+    delete this.s.meta.error;
+    if (text != null) {
+      this.s.messages.push({ role: 'user', content: text });
+      if (this.s.title === 'New session') { this.s.title = text.replace(/\s+/g, ' ').trim().slice(0, 60) || 'Session'; this.emit('title', { title: this.s.title }); }
+      this.emit('user', { text });
+    }
     this.save();
-    this.loop().catch(e => this.emit('error', { message: String(e?.message || e) })).finally(() => {
+    this.loop().catch(e => {
+      if (this.abort?.signal.aborted) return;
+      const err = { message: String(e?.message || e), kind: e?.kind || 'bad', at: Date.now() };
+      this.s.meta.error = err; this.endReason = 'error';
+      this.emit('error', err);
+    }).finally(() => {
       const reason = this.abort?.signal.aborted ? 'stopped' : this.endReason || 'done';
       this.running = false; this.abort = null; this.endReason = null;
       for (const r of this.waiting.values()) r('deny');
@@ -106,10 +133,12 @@ export class Runtime {
       this.emit('step_start', { step });
       let r0 = 0, rMs = 0, f0 = 0;
       const thought = () => { f0 ||= Date.now(); if (r0 && !rMs) rMs = Date.now() - r0; };
-      const { message, usage, finish } = await ds.stream(
+      const r = await this.call(signal, () => f0 > 0, () => ds.stream(
         { model: s.model, messages: this.apiMessages(), tools, effort: s.effort, thinking: s.thinking !== false },
         { reasoning: d => { r0 ||= Date.now(); f0 ||= r0; this.emit('reasoning', { d }); }, text: d => { thought(); this.emit('text', { d }); }, toolDelta: thought },
-        signal);
+        signal));
+      if (!r) return;
+      const { message, usage, finish } = r;
       const genMs = f0 ? Date.now() - f0 : 0;
       thought();
       if (!message.reasoning_content) delete message.reasoning_content;
@@ -127,6 +156,24 @@ export class Runtime {
     }
     this.endReason = 'max_steps';
     this.emit('notice', { text: `Stopped after ${max} steps. Send a message to continue.` });
+  }
+
+  // One model call, retried while nothing has streamed yet (a reply cut off halfway has already been shown,
+  // so that failure goes to the user). Resolves to null when the user stops the run.
+  async call(signal, started, fn) {
+    for (let attempt = 0; ; attempt++) {
+      try { const r = await fn(); noteApi(null); return r; }
+      catch (e0) {
+        if (signal.aborted) return null;
+        const e = asApiError(e0);
+        noteApi(e);
+        if (!e.transient || started() || attempt >= RETRY_WAITS.length) throw e;
+        const wait = RETRY_WAITS[attempt];
+        this.emit('api_retry', { kind: e.kind, message: e.message, attempt: attempt + 1, of: RETRY_WAITS.length, wait });
+        await sleep(wait, signal);
+        if (signal.aborted) return null;
+      }
+    }
   }
 
   async runTool(call, signal) {
@@ -150,7 +197,7 @@ export class Runtime {
       else if (decision !== 'allow') return finish(false, signal.aborted ? 'Cancelled: the user stopped the run.' : 'The user denied this tool call.', { denied: true });
     }
     try {
-      const out = await tool.run(args, { cwd: s.cwd, signal, session: s, onOutput: d => this.emit('tool_output', { id, d }) });
+      const out = await tool.run(args, { cwd: s.cwd, signal, session: s, onOutput: d => this.emit('tool_output', { id, d }), preview: url => this.emit('preview', { url }) });
       if (name === 'todo_write') this.emit('todos', { todos: s.todos });
       return finish(true, out);
     } catch (e) {

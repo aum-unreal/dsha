@@ -10,6 +10,8 @@ const tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'dsh-tes
 process.env.DSH_TEMP_ROOTS = path.join(tmp, 'no-temp');           // test folders live in $TMPDIR
 process.env.DSH_HOME = path.join(tmp, 'home');
 process.env.DSH_KEY_FILE = path.join(tmp, 'key');
+process.env.DSH_RETRY_WAITS = '20,20';
+process.env.DSH_IDLE_MS = '2000';                                  // a silent stream counts as dropped fast                            // two quick retries
 fs.writeFileSync(process.env.DSH_KEY_FILE, 'sk-test-0123456789\n');
 const work = path.join(tmp, 'work'); fs.mkdirSync(work);
 fs.writeFileSync(path.join(work, 'AGENTS.md'), 'Always say MAGIC.');
@@ -57,9 +59,10 @@ async function run(id, text, decide = () => 'allow', after = 0) {
       }
     }
   })().catch(e => { if (e.name !== 'AbortError') throw e; return events; });
-  await api('POST', `/api/sessions/${id}/messages`, { text });
+  await (text == null ? api('POST', `/api/sessions/${id}/retry`) : api('POST', `/api/sessions/${id}/messages`, { text }));
   return done;
 }
+const fail = (code, msg) => res => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { message: msg } })); };
 
 test.after(() => { srv.close(); mock.close(); fs.rmSync(tmp, { recursive: true, force: true }); });
 
@@ -168,4 +171,66 @@ test('fs listing and bad cwd', async () => {
   const r = (await api('GET', '/api/fs?path=' + encodeURIComponent(work))).json;
   assert.ok(r.dirs.includes('sub'));
   assert.equal((await api('POST', '/api/sessions', { cwd: path.join(work, 'nope') })).status, 400);
+});
+
+test('API trouble: transient errors retry, others stay on the session until Retry', async () => {
+  const s = (await api('POST', '/api/sessions', { cwd: work })).json;
+  script = [fail(503, 'Server busy'), fail(429, 'Slow down'), [delta({ content: 'made it' })]];
+  let evs = await run(s.id, 'hello');
+  const tries = evs.filter(e => e.type === 'api_retry');
+  assert.deepEqual(tries.map(e => [e.kind, e.attempt, e.of]), [['busy', 1, 2], ['rate', 2, 2]]);
+  assert.equal(evs.find(e => e.type === 'error'), undefined);
+  assert.equal(evs.filter(e => e.type === 'text').map(e => e.d).join(''), 'made it');
+  assert.equal((await api('GET', '/api/health')).json.api.ok, true);
+
+  // A rejected key is not retried; the error is kept on the session and in health.
+  let snap = (await api('GET', '/api/sessions/' + s.id)).json;
+  script = [fail(401, 'Authentication Fails')];
+  evs = await run(s.id, 'again', undefined, snap.live.seq);
+  const err = evs.find(e => e.type === 'error');
+  assert.equal(err.kind, 'auth'); assert.match(err.message, /401: Authentication Fails/);
+  assert.equal(evs.at(-1).reason, 'error');
+  snap = (await api('GET', '/api/sessions/' + s.id)).json;
+  assert.equal(snap.meta.error.kind, 'auth');
+  assert.equal((await api('GET', '/api/health')).json.api.kind, 'auth');
+
+  // Retry runs from the unanswered message without adding a new one.
+  script = [[delta({ content: 'second try' })]];
+  evs = await run(s.id, null, undefined, snap.live.seq);
+  assert.equal(evs.find(e => e.type === 'user'), undefined);
+  snap = (await api('GET', '/api/sessions/' + s.id)).json;
+  assert.equal(snap.meta.error, undefined);
+  assert.deepEqual(snap.messages.map(m => m.role), ['user', 'assistant', 'user', 'assistant']);
+  assert.equal(snap.messages.at(-1).content, 'second try');
+  assert.equal((await api('POST', `/api/sessions/${s.id}/retry`)).status, 409);
+});
+
+test('no connection to DeepSeek reads as a network error', async () => {
+  const { DeepSeek } = await import('../lib/deepseek.mjs');
+  const closed = http.createServer(); await new Promise(r => closed.listen(0, '127.0.0.1', r));
+  const port = closed.address().port; await new Promise(r => closed.close(r));
+  const ds = new DeepSeek({ key: 'k', base: `http://127.0.0.1:${port}` });
+  await assert.rejects(ds.stream({ model: 'm', messages: [] }), e => e.kind === 'network' && e.transient && /Can't reach DeepSeek: ECONNREFUSED/.test(e.message));
+});
+
+test('a stream that goes silent is cut and retried', async () => {
+  const s = (await api('POST', '/api/sessions', { cwd: work })).json;
+  script = [res => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(': keep\n\n'); }, [delta({ content: 'after the stall' })]];
+  const evs = await run(s.id, 'stall');
+  const r = evs.find(e => e.type === 'api_retry');
+  assert.equal(r.kind, 'network'); assert.match(r.message, /no answer for 2 s/);
+  assert.equal(evs.filter(e => e.type === 'text').map(e => e.d).join(''), 'after the stall');
+});
+
+test('preview tool hands the page to the app', async () => {
+  const s = (await api('POST', '/api/sessions', { cwd: work })).json;
+  await api('PATCH', '/api/sessions/' + s.id, { mode: 'auto' });
+  script = [[delta({ tool_calls: [{ index: 0, id: 'p1', type: 'function', function: { name: 'preview', arguments: '{"url":"http://127.0.0.1:5173"}' } }] })],
+            [delta({ tool_calls: [{ index: 0, id: 'p2', type: 'function', function: { name: 'preview', arguments: '{"url":"file:///etc/passwd"}' } }] })],
+            [delta({ content: 'There it is.' })]];
+  const evs = await run(s.id, 'show me');
+  assert.deepEqual(evs.filter(e => e.type === 'preview').map(e => e.url), ['http://127.0.0.1:5173/']);
+  const results = evs.filter(e => e.type === 'tool_result');
+  assert.equal(results[0].ok, true);
+  assert.equal(results[1].ok, false); assert.match(results[1].content, /Only http and https/);
 });
