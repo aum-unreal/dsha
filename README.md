@@ -19,6 +19,8 @@ The terminal client shares sessions with the app: `dsh` (new session in the cwd)
 - Models: `deepseek-flash` / `deepseek-v4-pro`, thinking off/low/high/max, per session. Token, cache and cost meter.
 - Sessions drawer, folder picker, `/compact` (auto near 700k tokens), edit and resend a message, share transcript, share text into DSHA.
 - Project instructions: `DSH.md`, `AGENTS.md` or `CLAUDE.md` in the working directory are added to the system prompt.
+- Foldable-aware: unfolded, chat sits left of the hinge with an Inspector on the right (live tool output, tasks, session stats with files touched, sessions); half-folded in landscape (Flex mode), chat stays above the hinge and a control deck below has big approve/deny buttons, live output and quick actions; folded, the cover screen gets a denser single column. Uses the hinge-angle sensor plus the screen centre, or the Viewport Segments API when the WebView provides it.
+- OLED design: true-black surfaces, hairlines and a blue-violet-cyan accent; Fraunces, DM Sans, JetBrains Mono and Space Mono bundled (Latin subsets, OFL).
 - Notifications when a run finishes or needs approval while the app is in the background.
 
 ## Build & test
@@ -30,3 +32,4 @@ dsh listens on 127.0.0.1 only and needs the token from `~/.dsh/config.json`. To 
 ## Changes
 - 0.1.0 (1): first version. dsh backend (agent loop, 9 tools, permission modes, SSE event log, sessions, compaction, terminal client) and the DSHA app (chat, approvals, sessions, settings, Termux pairing, notifications).
 - 0.1.1 (2): fix the app sticking on "Working…" after a reply. The native SSE reader held the last batch of events (final text, usage, run_end) until another event arrived; it now flushes whenever the stream goes idle (`Sse.java`, JVM check `tests/SseCheck.java`). The UI also re-checks with dsh every 10 s while a run looks active.
+- 0.2.0 (3): UI overhaul. OLED true-black theme, bundled stylised fonts, and foldable layouts: hinge-split dual pane with Inspector, tabletop Flex-mode deck and a compact cover screen. Native hinge-angle bridge (`TYPE_HINGE_ANGLE`).

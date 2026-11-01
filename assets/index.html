@@ -6,33 +6,46 @@
 <meta name="color-scheme" content="dark">
 <title>DSHA</title>
 <link rel="icon" href="data:,">
+<link rel="preload" href="fonts/dm.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="fonts/fraunces.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
 <div id="app">
-  <header id="top">
-    <button class="icon" id="menuBtn" aria-label="Sessions"></button>
-    <div id="titleBox">
-      <div id="title">DSHA</div>
-      <button id="cwdChip" class="sub"></button>
-    </div>
-    <button class="chip" id="modeChip" aria-label="Permission mode"></button>
-    <button class="icon" id="moreBtn" aria-label="Session options"></button>
-  </header>
-  <main id="scroller"><div id="log"></div><div id="empty"></div></main>
-  <button id="jump" aria-label="Scroll to bottom" hidden></button>
-  <section id="todos" hidden></section>
-  <footer id="composer">
-    <div id="slash" hidden></div>
-    <div id="inputRow">
-      <textarea id="input" rows="1" placeholder="Ask dsh…" enterkeyhint="send" autocomplete="off" spellcheck="true"></textarea>
-      <button id="sendBtn" class="send" aria-label="Send"></button>
-    </div>
-    <div id="meter"></div>
-  </footer>
+  <section id="chatPane">
+    <header id="top">
+      <button class="icon" id="menuBtn" aria-label="Sessions"></button>
+      <div id="titleBox">
+        <div id="title">DSHA</div>
+        <button id="cwdChip" class="sub"></button>
+      </div>
+      <button class="chip" id="modeChip" aria-label="Permission mode"></button>
+      <button class="icon" id="moreBtn" aria-label="Session options"></button>
+      <div id="runbar" aria-hidden="true"></div>
+    </header>
+    <main id="scroller"><div id="log"></div><div id="empty"></div></main>
+    <button id="jump" aria-label="Scroll to bottom" hidden></button>
+    <footer id="deck">
+      <div id="deckLive" aria-live="polite"></div>
+      <section id="todos" hidden></section>
+      <div id="composer">
+        <div id="slash" hidden></div>
+        <div id="inputRow">
+          <textarea id="input" rows="1" placeholder="Ask dsh…" enterkeyhint="send" autocomplete="off" spellcheck="true"></textarea>
+          <button id="sendBtn" class="send" aria-label="Send"></button>
+        </div>
+        <div id="meter"></div>
+      </div>
+    </footer>
+  </section>
+  <div id="hinge" aria-hidden="true"></div>
+  <aside id="inspector" aria-label="Inspector">
+    <nav id="itabs" role="tablist"></nav>
+    <div id="ibody"></div>
+  </aside>
 </div>
 <aside id="drawer" aria-hidden="true">
-  <div class="drawerHead"><div class="brand"><span class="logo"></span>DSHA</div><button class="icon" id="settingsBtn" aria-label="Settings"></button></div>
+  <div class="drawerHead"><div class="brand"><span class="logo"></span><span class="wordmark">DSHA</span></div><button class="icon" id="settingsBtn" aria-label="Settings"></button></div>
   <button id="newBtn" class="primary wide"></button>
   <div id="sessions"></div>
   <div id="conn" class="conn"></div>

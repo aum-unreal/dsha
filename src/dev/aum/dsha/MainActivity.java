@@ -19,7 +19,7 @@ import org.json.*;
 // Native shell for the DSHA web UI. The UI never talks to the network itself:
 // every backend call goes through the Bridge below (HTTP + SSE to dsh), which
 // also drives Termux (RUN_COMMAND) to start the backend and fetch its token.
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements android.hardware.SensorEventListener {
     private static final String ORIGIN = "https://dsha.local/";
     private static final String TERMUX = "com.termux", RUN = "com.termux.RUN_COMMAND", PERM_RUN = "com.termux.permission.RUN_COMMAND";
     private static final String DSH = "/data/data/com.termux/files/home/.local/bin/dsh", BASH = "/data/data/com.termux/files/usr/bin/bash";
@@ -32,6 +32,10 @@ public class MainActivity extends Activity {
     private String pendingShare;
     private boolean ready, visible;
     private Runnable afterPerm;
+    private android.hardware.SensorManager sensors;
+    private android.hardware.Sensor hinge;
+    private float hingeAngle = -1, sentAngle = -2;
+    private String sentGeom = "";
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -67,13 +71,39 @@ public class MainActivity extends Activity {
                 return false;
             }
         });
+        sensors = getSystemService(android.hardware.SensorManager.class);
+        if (Build.VERSION.SDK_INT >= 30 && sensors != null) hinge = sensors.getDefaultSensor(android.hardware.Sensor.TYPE_HINGE_ANGLE);
+        web.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> sendPosture(true));
         handleIntent(getIntent());
         web.loadUrl(ORIGIN + "index.html");
     }
 
     @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); handleIntent(i); }
-    @Override protected void onResume() { super.onResume(); visible = true; js("window.native&&native.resume&&native.resume()"); }
-    @Override protected void onPause() { super.onPause(); visible = false; }
+    @Override protected void onResume() {
+        super.onResume(); visible = true; js("window.native&&native.resume&&native.resume()");
+        if (hinge != null) sensors.registerListener(this, hinge, android.hardware.SensorManager.SENSOR_DELAY_UI);
+        sendPosture(true);
+    }
+    @Override protected void onPause() { super.onPause(); visible = false; if (hinge != null) sensors.unregisterListener(this); }
+
+    // Fold posture for the UI: hinge angle (TYPE_HINGE_ANGLE, -1 when the device has
+    // none) plus the physical screen centre in WebView CSS pixels, which is where a
+    // book-style fold's hinge sits. The UI decides between cover/dual-pane/tabletop.
+    @Override public void onSensorChanged(android.hardware.SensorEvent e) { hingeAngle = e.values[0]; sendPosture(false); }
+    @Override public void onAccuracyChanged(android.hardware.Sensor s, int a) {}
+    private void sendPosture(boolean force) {
+        if (!ready || web == null) return;
+        if (!force && Math.abs(hingeAngle - sentAngle) < 4) return;
+        int[] loc = new int[2]; web.getLocationOnScreen(loc);
+        int sw, sh;
+        if (Build.VERSION.SDK_INT >= 30) { android.graphics.Rect b = getWindowManager().getMaximumWindowMetrics().getBounds(); sw = b.width(); sh = b.height(); }
+        else { android.util.DisplayMetrics m = new android.util.DisplayMetrics(); getWindowManager().getDefaultDisplay().getRealMetrics(m); sw = m.widthPixels; sh = m.heightPixels; }
+        float d = getResources().getDisplayMetrics().density;
+        String geom = Math.round((sw / 2f - loc[0]) / d) + "," + Math.round((sh / 2f - loc[1]) / d);
+        if (!force && geom.equals(sentGeom) && Math.abs(hingeAngle - sentAngle) < 4) return;
+        sentAngle = hingeAngle; sentGeom = geom;
+        js("window.native&&native.posture&&native.posture(" + (hinge == null ? -1 : Math.round(hingeAngle)) + "," + geom + ")");
+    }
     @Override public void onBackPressed() { js("window.native&&native.back?native.back():0", r -> { if (!"true".equals(r)) super.onBackPressed(); }); }
     @Override protected void onDestroy() { for (HttpURLConnection c : streams.values()) c.disconnect(); pool.shutdownNow(); web.destroy(); super.onDestroy(); }
 
@@ -89,7 +119,7 @@ public class MainActivity extends Activity {
     private static String mime(String p) {
         if (p.endsWith(".html")) return "text/html"; if (p.endsWith(".js")) return "text/javascript";
         if (p.endsWith(".css")) return "text/css"; if (p.endsWith(".svg")) return "image/svg+xml";
-        if (p.endsWith(".woff2")) return "font/woff2"; if (p.endsWith(".png")) return "image/png";
+        if (p.endsWith(".woff2")) return "font/woff2"; if (p.endsWith(".ttf")) return "font/ttf"; if (p.endsWith(".png")) return "image/png";
         return "text/plain";
     }
 
@@ -163,7 +193,7 @@ public class MainActivity extends Activity {
     }
 
     class Bridge {
-        @JavascriptInterface public void ready() { ready = true; main.post(MainActivity.this::deliverShare); }
+        @JavascriptInterface public void ready() { ready = true; main.post(() -> { deliverShare(); sendPosture(true); }); }
         @JavascriptInterface public String settings() {
             try { return new JSONObject().put("url", base()).put("token", token()).put("version", BuildConfigVersion()).toString(); } catch (JSONException e) { return "{}"; }
         }

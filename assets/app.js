@@ -16,6 +16,7 @@ const I = {
   term: svg('<path d="M5 8l4 4-4 4M12 17h7"/>'), file: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
   pen: svg('<path d="M4 20h4L19 9l-4-4L4 16z"/>'), search: svg('<circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/>'), globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'),
   list: svg('<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>'), retry: svg('<path d="M4 4v6h6"/><path d="M20 12a8 8 0 0 0-14-5.3L4 10"/><path d="M20 20v-6h-6"/><path d="M4 12a8 8 0 0 0 14 5.3l2-3.3"/>'),
+  arrow: svg('<path d="M5 12h14M13 6l6 6-6 6"/>'), activity: svg('<path d="M3 12h4l3-8 4 16 3-8h4"/>'), chart: svg('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'), fold: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>'),
   share: svg('<path d="M12 3v13M7 8l5-5 5 5"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/>'), trash: svg('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'), link: svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
 };
 const TOOL_ICON = { bash: I.term, read_file: I.file, write_file: I.pen, edit_file: I.pen, list_dir: I.folder, grep: I.search, glob: I.search, web_fetch: I.globe, todo_write: I.list };
@@ -70,7 +71,7 @@ function copy(t) { N ? N.copy(t) : navigator.clipboard?.writeText(t); toast('Cop
 const md = window.markdownit({ linkify: true, breaks: false, highlight(code, lang) { try { if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value; } catch {} return ''; } });
 function renderMd(el, text) {
   el.innerHTML = DOMPurify.sanitize(md.render(text || ''));
-  for (const pre of el.querySelectorAll('pre')) { const b = h('button', 'cp', I.copy); b.ariaLabel = 'Copy code'; b.onclick = () => copy(pre.querySelector('code')?.innerText || pre.innerText); pre.append(b); }
+  for (const pre of el.querySelectorAll('pre')) { const lang = (pre.querySelector('code')?.className.match(/language-(\w+)/) || [])[1]; if (lang) pre.dataset.lang = lang; const b = h('button', 'cp', I.copy); b.ariaLabel = 'Copy code'; b.onclick = () => copy(pre.querySelector('code')?.innerText || pre.innerText); pre.append(b); }
   for (const a of el.querySelectorAll('a')) a.target = '_blank';
 }
 
@@ -95,7 +96,7 @@ function build(it) {
     case 'tool': {
       const e = h('div', 'tool');
       e.innerHTML = `<button class="head"><span class="ti">${TOOL_ICON[it.name] || I.term}</span><span class="tn"></span><span class="ts"></span><span class="ms"></span><span class="st"></span></button><div class="ask"><p></p><div class="cmd"></div><div class="row"><button class="deny">Deny</button><button class="always">Always</button><button class="allow">Allow</button></div></div><div class="out"><pre class="args"></pre><pre class="res"></pre></div>`;
-      e.querySelector('.head').onclick = () => { e.classList.toggle('open'); haptic(); };
+      e.querySelector('.head').onclick = () => { haptic(); if (layout.mode === 'wide') { S.sel = S.sel === it.id ? null : it.id; S.itab = 'activity'; for (const t of S.items) if (t.kind === 'tool') t.el.classList.toggle('sel', t.id === S.sel); ui(); } else e.classList.toggle('open'); };
       for (const d of ['allow', 'always', 'deny']) e.querySelector('.' + d).onclick = () => decide(it, d);
       return e;
     }
@@ -110,7 +111,7 @@ function build(it) {
 }
 let mdQueue = new Set(), mdTimer = 0;
 function paint(it) {
-  const e = it.el;
+  const e = it.el; ui();
   switch (it.kind) {
     case 'user': e.textContent = it.text; e.classList.toggle('pending', !!it.pending); break;
     case 'text':
@@ -125,7 +126,7 @@ function paint(it) {
       break;
     }
     case 'tool': {
-      e.className = 'tool ' + (it.status || 'run') + (e.classList.contains('open') ? ' open' : '');
+      e.className = 'tool ' + (it.status || 'run') + (e.classList.contains('open') ? ' open' : '') + (S.sel === it.id ? ' sel' : '');
       e.querySelector('.tn').textContent = it.name.replace('_', ' ');
       e.querySelector('.ts').textContent = it.summary || '';
       e.querySelector('.ms').textContent = it.ms != null ? fmtMs(it.ms) : '';
@@ -226,7 +227,7 @@ async function decide(it, d) {
 async function load(id) {
   S.close?.(); S.close = null;
   const s = await api('GET', '/api/sessions/' + id);
-  S.cur = s; S.seq = s.live.fromSeq; S.todos = s.todos || [];
+  S.cur = s; S.seq = s.live.fromSeq; S.todos = s.todos || []; S.sel = null;
   local.set('last', id);
   fromMessages(s.messages, s.meta);
   setRunning(s.live.running);
@@ -257,8 +258,9 @@ async function resync() {
   } catch { conn(false); if (!S.close) setTimeout(resync, 4000); }
 }
 async function refreshSessions() { try { S.sessions = await api('GET', '/api/sessions'); renderSessions(); conn(true); } catch { conn(false); } }
-function renderSessions() {
-  const box = $('#sessions'); box.textContent = '';
+function renderSessions(box = $('#sessions')) {
+  if (box.id === 'sessions' && layout.mode === 'wide' && S.itab === 'sessions') renderSessions($('#ibody'));
+  box.textContent = '';
   const day = 864e5, now = Date.now(), groups = [['Today', x => now - x.updated < day], ['This week', x => now - x.updated < 7 * day], ['Earlier', () => true]];
   const used = new Set();
   for (const [name, f] of groups) {
@@ -267,7 +269,7 @@ function renderSessions() {
     for (const s of list) {
       used.add(s.id);
       const b = h('button', 'sitem' + (s.id === S.cur?.id ? ' cur' : ''), `<div class="sx"><div class="st1">${esc(s.title)}</div><div class="st2">${esc(short(s.cwd))} · ${s.turns} turn${s.turns === 1 ? '' : 's'}</div></div>${s.running ? '<span class="live"></span>' : ''}`);
-      b.onclick = () => { drawer(false); if (s.id !== S.cur?.id) load(s.id).catch(e => toast(e.message)); };
+      b.onclick = () => { drawer(false); if (s.id !== S.cur?.id) { S.sel = null; load(s.id).catch(e => toast(e.message)); } };
       box.append(b);
     }
   }
@@ -288,24 +290,26 @@ function meter() {
   const u = s.usage || {}, ctx = u.lastPrompt || 0;
   const k = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
   const c = u.costPeak || 0;
-  $('#meter').innerHTML = `<span>${esc(s.model.replace('deepseek-', ''))} · ${s.thinking === false ? 'no thinking' : esc(s.effort)}</span><span>ctx ${k(ctx)} · ${k((u.hit || 0) + (u.miss || 0))} in · ${k(u.out || 0)} out · $${c < 0.01 ? c.toFixed(4) : c.toFixed(3)}</span>`;
+  $('#meter').innerHTML = `<span><b>${esc(s.model.replace('deepseek-', ''))}</b> · ${s.thinking === false ? 'no thinking' : esc(s.effort)}</span><span>ctx <b>${k(ctx)}</b> · <i class="mx">${k((u.hit || 0) + (u.miss || 0))} in · ${k(u.out || 0)} out · </i><b>$${c < 0.01 ? c.toFixed(4) : c.toFixed(3)}</b></span>`; ui();
 }
 function todos() {
+  ui();
   const box = $('#todos'), t = S.todos || [];
   box.hidden = !t.length || t.every(x => x.status === 'completed') && !S.running;
   if (box.hidden) return;
   const cur = t.find(x => x.status === 'in_progress') || t.find(x => x.status === 'pending') || t[t.length - 1];
   const done = t.filter(x => x.status === 'completed').length;
   box.className = S.todosOpen ? 'open' : '';
-  box.innerHTML = `<button>${I.list}<b>${esc(cur.content)}</b><span>${done}/${t.length}</span></button><ul>${t.map(x => `<li class="${x.status}"><i>${x.status === 'completed' ? '✓' : x.status === 'in_progress' ? '▸' : '·'}</i>${esc(x.content)}</li>`).join('')}</ul>`;
+  box.innerHTML = `<button>${I.list}<b>${esc(cur.content)}</b><span class="n">${done}/${t.length}</span></button><ul>${t.map(x => `<li class="${x.status}"><i>${x.status === 'completed' ? '✓' : x.status === 'in_progress' ? '▸' : '·'}</i>${esc(x.content)}</li>`).join('')}</ul>`;
   box.firstChild.onclick = () => { S.todosOpen = !S.todosOpen; todos(); };
 }
 function setRunning(r) {
   S.running = r;
   const b = $('#sendBtn'); b.classList.toggle('stop', r); b.innerHTML = r ? I.stop : I.send; b.ariaLabel = r ? 'Stop' : 'Send';
   syncSend();
+  document.body.classList.toggle('running', r);
   let w = $('#working');
-  if (r && !w) { w = h('div', 'working', '<span class="spin"></span><span>Working…</span>'); w.id = 'working'; log.after(w); w.style.cssText = 'max-width:780px;margin:8px auto 0;padding:0 14px'; }
+  if (r && !w) { w = h('div', 'working', '<span class="spin"></span><span>Working…</span>'); w.id = 'working'; log.after(w); }
   if (!r) w?.remove();
   todos();
 }
@@ -317,9 +321,9 @@ function emptyState() {
   const e = $('#empty');
   if (S.items.length) { e.hidden = true; return; }
   e.hidden = false;
-  e.innerHTML = `<span class="logo"></span><h2>What should dsh do?</h2><div>${S.cur ? 'Working in <code>' + esc(short(S.cur.cwd)) + '</code>' : 'A new session starts in <code>' + esc(short(S.cfg?.cwd)) + '</code>'}</div><div class="starters"></div>`;
+  e.innerHTML = `<span class="logo big"></span><h2>What should <span class="grad-text">dsh</span> do?</h2><div class="where">${S.cur ? 'Working in <code>' + esc(short(S.cur.cwd)) + '</code>' : 'A new session starts in <code>' + esc(short(S.cfg?.cwd)) + '</code>'}</div><div class="starters"></div>`;
   for (const t of ['Summarise this project and how to build it', 'What changed in git recently?', 'Find TODOs and rank them by importance', 'Check disk usage and the biggest folders here']) {
-    const b = h('button', null, esc(t)); b.onclick = () => { $('#input').value = t; send(); }; e.querySelector('.starters').append(b);
+    const b = h('button', null, `<span>${esc(t)}</span>${I.arrow}`); b.onclick = () => { $('#input').value = t; send(); }; e.querySelector('.starters').append(b);
   }
 }
 
@@ -506,7 +510,7 @@ async function settingsSheet() {
 function onboarding(err) {
   log.textContent = ''; S.items = [];
   const e = $('#empty'); e.hidden = false;
-  e.innerHTML = `<div class="onboard"><span class="logo" style="width:52px;height:52px"></span><h2>Connect to dsh</h2><p>DSHA is the interface. The agent, dsh, runs in Termux on this phone, with your files and shell.</p>
+  e.innerHTML = `<div class="onboard"><span class="logo big"></span><h2>Connect to dsh</h2><p>DSHA is the interface. The agent, dsh, runs in Termux on this phone, with your files and shell.</p>
   <button class="primary wide" id="obPair">${I.link}Pair with Termux</button>
   <div class="err-text" id="obErr">${esc(err || '')}</div>
   <ol><li>dsh lives in <code>~/dev/dsha/server</code>; the <code>dsh</code> command starts it.</li><li>Pairing runs <code>dsh start</code> in Termux and reads the token. Termux needs <code>allow-external-apps = true</code> in <code>~/.termux/termux.properties</code>.</li><li>Or open settings and paste the URL and the output of <code>dsh token</code>.</li></ol>
@@ -534,10 +538,129 @@ async function boot() {
   if (!S.health.hasKey) { add({ kind: 'notice', err: true, text: 'No DeepSeek API key on the backend yet. Add one in Settings.' }); emptyState(); }
 }
 
+/* ---------- foldable layout ---------- */
+// Three modes. cover/phone: single column. wide (unfolded, or half-open like a
+// book): chat in the pane left of the hinge, inspector on the right. tabletop
+// (half-folded with the hinge horizontal, "Flex mode"): chat above the hinge,
+// a control deck below it. The hinge comes from the native TYPE_HINGE_ANGLE
+// sensor plus the screen centre (window.native.posture), or from the browser's
+// Viewport Segments API when the WebView has it.
+const layout = { mode: 'phone', angle: -1, cx: null, cy: null };
+window.native.posture = (angle, cx, cy) => { Object.assign(layout, { angle, cx, cy }); relayout(); };
+function relayout() {
+  const w = innerWidth, hgt = innerHeight, root = document.documentElement.style;
+  const segs = window.viewport?.segments, q = new URLSearchParams(location.search).get('posture');
+  const half = layout.angle > 20 && layout.angle < 160;
+  let mode = 'phone', split = null, gap = 0;
+  if (segs?.length === 2) {
+    const [a, b] = segs;
+    if (a.y === b.y) { mode = 'wide'; split = a.width; gap = b.x - a.right; } else { mode = 'tabletop'; split = a.height; gap = b.y - a.bottom; }
+  } else if (q === 'tabletop' || half && w > hgt && w >= 560) { mode = 'tabletop'; split = layout.cy; }
+  else if (q === 'wide' || w >= 680) { mode = 'wide'; split = layout.cx; }
+  if (mode === 'wide') { const x = split > 260 && split < w - 260 ? split : w / 2; root.setProperty('--paneL', x - gap / 2 + 'px'); root.setProperty('--hingeW', gap + 'px'); }
+  if (mode === 'tabletop') { const y = split > 160 && split < hgt - 140 ? split : hgt / 2; root.setProperty('--hy', y + 'px'); root.setProperty('--hingeW', gap + 'px'); }
+  const changed = mode !== layout.mode;
+  layout.mode = mode;
+  for (const m of ['wide', 'tabletop']) document.body.classList.toggle(m, mode === m);
+  if (changed) { if (mode === 'wide') { drawer(false); for (const t of S.items) t.el?.classList.remove('open'); } if (mode !== 'wide') S.sel = null; for (const t of S.items) if (t.kind === 'tool') paint(t); ui(true); requestAnimationFrame(follow); }
+}
+addEventListener('resize', relayout);
+window.viewport?.addEventListener?.('segmentschange', relayout);
+
+let uiQueued = false;
+function ui(now) {
+  if (layout.mode === 'phone') return;
+  if (now) return renderUI();
+  if (!uiQueued) { uiQueued = true; requestAnimationFrame(() => { uiQueued = false; renderUI(); }); }
+}
+function renderUI() { if (layout.mode === 'wide') inspector(); else if (layout.mode === 'tabletop') deckLive(); }
+
+const waitingTool = () => S.items.find(x => x.kind === 'tool' && x.status === 'waiting');
+const focusTool = () => S.items.find(x => x.id === S.sel) || [...S.items].reverse().find(x => x.kind === 'tool');
+const liveThink = () => { const l = [...S.items].reverse().find(x => x.kind !== 'notice'); return l?.kind === 'think' && l.live ? l : null; };
+const tail = (t, n = 6000) => (t = String(t || ''), t.length > n ? '…' + t.slice(-n) : t);
+
+S.itab = 'activity';
+function inspector() {
+  const tabs = [['activity', I.activity, 'Activity'], ['tasks', I.list, 'Tasks'], ['stats', I.chart, 'Session'], ['sessions', I.folder, 'Sessions']];
+  const nt = (S.todos || []).filter(x => x.status !== 'completed').length;
+  const nav = $('#itabs');
+  const sig = S.itab + nt + !!waitingTool();
+  if (nav.dataset.sig !== sig) {
+    nav.dataset.sig = sig;
+    nav.innerHTML = tabs.map(([k, ic, l]) => `<button role="tab" data-t="${k}" class="${S.itab === k ? 'on' : ''}">${l}${k === 'tasks' && nt ? `<span class="badge">${nt}</span>` : ''}${k === 'activity' && waitingTool() ? '<span class="badge">!</span>' : ''}</button>`).join('');
+    nav.querySelectorAll('button').forEach(b => b.onclick = () => { haptic(); S.itab = b.dataset.t; nav.dataset.sig = ''; inspector(); });
+  }
+  const box = $('#ibody'), keepScroll = box.scrollTop, atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  if (S.itab === 'sessions') { if (box.dataset.tab !== 'sessions') { box.dataset.tab = 'sessions'; renderSessions(box); } return; }
+  box.dataset.tab = S.itab;
+  if (S.itab === 'activity') {
+    const th = liveThink(), t = focusTool(), live = S.running && !S.sel;
+    if (!t && !th) { box.innerHTML = `<div class="iempty">Tool calls and their output<br>appear here.<span class="label">Tap a tool card to pin it</span></div>`; return; }
+    box.innerHTML = `<div class="ihead"><h3>${th ? 'Thinking' : esc((t.name || '').replace('_', ' '))}</h3>${S.sel ? '<button class="pill" id="follow">Follow live</button>' : live ? '<span class="pill live">Live</span>' : ''}</div>`
+      + (th ? `<div class="icard"><span class="label">Reasoning</span><div class="ithink">${esc(tail(th.text, 8000))}</div></div>` : '')
+      + (t ? `<div class="icard term"><div class="cmdline">${esc(t.name === 'bash' ? '$ ' + t.args?.command : t.summary)}</div><pre class="ipre">${esc(t.content ?? t.output ?? '') || (t.status === 'waiting' ? 'Waiting for your approval…' : 'Running…')}</pre></div>`
+        + (t.status === 'waiting' ? `<div class="rowbtns"><button class="secondary" data-d="deny">Deny</button><button class="secondary" data-d="always">Always</button><button class="primary" data-d="allow">Allow</button></div>` : '')
+        + (t.ms != null ? `<div class="label" style="margin-top:8px">${t.status} · ${fmtMs(t.ms)}</div>` : '') : '');
+    box.querySelector('#follow')?.addEventListener('click', () => { S.sel = null; for (const x of S.items) if (x.kind === 'tool') x.el.classList.remove('sel'); inspector(); });
+    box.querySelectorAll('[data-d]').forEach(b => b.onclick = () => decide(t, b.dataset.d));
+    box.scrollTop = live || atEnd ? box.scrollHeight : keepScroll;
+    return;
+  }
+  if (S.itab === 'tasks') {
+    const t = S.todos || [], done = t.filter(x => x.status === 'completed').length;
+    box.innerHTML = t.length ? `<div class="ihead"><h3>Tasks</h3><span class="pill">${done}/${t.length}</span></div><div class="bar" style="margin-bottom:14px"><i style="width:${100 * done / t.length}%"></i></div><ul class="ilist" style="padding:0">${t.map(x => `<li class="${x.status}"><i>${x.status === 'completed' ? '✓' : x.status === 'in_progress' ? '▸' : '·'}</i>${esc(x.content)}</li>`).join('')}</ul>` : `<div class="iempty">No task list yet.<span class="label">dsh writes one for multi-step work</span></div>`;
+    return;
+  }
+  if (S.itab === 'stats') {
+    const s = S.cur; if (!s) { box.innerHTML = '<div class="iempty">No session open.</div>'; return; }
+    const u = s.usage || {}, inTok = (u.hit || 0) + (u.miss || 0), hitPct = inTok ? Math.round(100 * (u.hit || 0) / inTok) : 0;
+    const k = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+    const tools = S.items.filter(x => x.kind === 'tool'), files = new Map();
+    for (const t of tools) if (t.args?.path && /file|list_dir/.test(t.name)) files.set(t.args.path, t.name === 'read_file' || t.name === 'list_dir' ? (files.get(t.args.path) || 'read') : t.name === 'write_file' ? 'write' : 'edit');
+    box.innerHTML = `<div class="ihead"><h3>${esc(s.title)}</h3></div>
+      <div class="stats"><div class="stat"><span class="label">Context</span><b>${k(u.lastPrompt || 0)}</b><div class="bar" style="margin-top:8px"><i style="width:${Math.min(100, 100 * (u.lastPrompt || 0) / 1048576)}%"></i></div><small>of 1M tokens</small></div>
+      <div class="stat"><span class="label">Spent</span><b>$${(u.costPeak || 0).toFixed(4)}</b><small>off-peak $${(u.costOff || 0).toFixed(4)}</small></div>
+      <div class="stat"><span class="label">Cache hits</span><b>${hitPct}%</b><small>${k(u.hit || 0)} of ${k(inTok)} in</small></div>
+      <div class="stat"><span class="label">Tool calls</span><b>${tools.length}</b><small>${tools.filter(t => t.status === 'fail').length} failed · ${tools.filter(t => t.status === 'denied').length} denied</small></div></div>
+      <div class="icard"><span class="label">Session</span><div style="padding:4px 14px 8px"><div class="kv"><span>Model</span><b>${esc(s.model)}</b></div><div class="kv"><span>Thinking</span><b>${s.thinking === false ? 'off' : esc(s.effort)}</b></div><div class="kv"><span>Mode</span><b>${esc(s.mode)}</b></div><div class="kv" style="border:0"><span>Folder</span><b>${esc(short(s.cwd))}</b></div></div></div>
+      ${files.size ? `<div class="icard"><span class="label">Files touched</span><ul class="files">${[...files].map(([p, m]) => `<li><span>${esc(p)}</span><em class="${m[0]}">${m}</em></li>`).join('')}</ul></div>` : ''}`;
+  }
+}
+
+function deckLive() {
+  const box = $('#deckLive'), w = waitingTool(), th = liveThink(), t = [...S.items].reverse().find(x => x.kind === 'tool');
+  if (w) {
+    const cmd = w.name === 'bash' ? w.args?.command : w.name === 'edit_file' ? `${w.args?.path}\n− ${w.args?.old_string}\n+ ${w.args?.new_string}` : w.summary;
+    if (box.dataset.k !== 'ask' + w.id) {
+      box.dataset.k = 'ask' + w.id;
+      box.innerHTML = `<div class="dl-head"><span class="label">Needs approval · ${esc(w.name.replace('_', ' '))}</span></div><div class="dl-ask"><p>${esc(askText(w))}</p><div class="cmd">${esc(cmd)}</div><div class="row"><button class="deny">Deny</button><button class="always">Always</button><button class="allow">Allow</button></div></div>`;
+      for (const d of ['allow', 'always', 'deny']) box.querySelector('.' + d).onclick = () => decide(w, d);
+    }
+    return;
+  }
+  if (S.running) {
+    const what = th ? ['Thinking', th.text] : t && t.status === 'run' ? [t.name.replace('_', ' ') + ' · ' + String(t.summary || '').slice(0, 60), t.output || ''] : t ? [t.name.replace('_', ' ') + ' · done', t.content || ''] : ['Starting', ''];
+    if (box.dataset.k !== 'live') { box.dataset.k = 'live'; box.innerHTML = `<div class="dl-head"><span class="spin"></span><span class="label"></span><button class="secondary" style="height:36px;padding:0 14px" id="dlStop">Stop</button></div><div class="dl-body"><pre></pre></div>`; box.querySelector('#dlStop').onclick = stop; }
+    box.querySelector('.label').textContent = what[0];
+    box.querySelector('pre').textContent = tail(what[1], 4000);
+    const b = box.querySelector('.dl-body'); b.scrollTop = b.scrollHeight;
+    return;
+  }
+  const idle = 'idle' + (S.cur?.id || '') + (S.cur?.mode || S.cfg?.mode);
+  if (box.dataset.k === idle) return;
+  box.dataset.k = idle;
+  const acts = [['cont', I.retry, 'Continue', 'Keep going'], ['mode', I.fold, 'Mode', MODES[S.cur?.mode || S.cfg?.mode || 'ask'][0]], ['compact', I.chart, 'Compact', 'Free context'], ['new', I.plus, 'New session', 'Pick a folder']];
+  box.innerHTML = `<div class="dl-head"><span class="label">Flex mode · quick actions</span></div><div class="quick">${acts.map(([k, ic, l, sub]) => `<button data-q="${k}">${ic}<span>${l}</span><small class="label">${esc(sub)}</small></button>`).join('')}</div>`;
+  box.querySelectorAll('[data-q]').forEach(b => b.onclick = () => { haptic(); ({ cont: () => { input.value = 'Continue.'; send(); }, mode: modeSheet, compact, new: newSession })[b.dataset.q](); });
+}
+
 // Watchdog: while a run looks active, confirm with the server now and then, so a
 // lost event can never leave the UI spinning.
 setInterval(() => { if (S.running && S.cur && visible()) resync(); }, 10000);
 
+$('#sendBtn').innerHTML = I.send;
 input.value = local.get('draft'); grow(); syncSend(); header();
+relayout();
 boot();
 N?.ready();

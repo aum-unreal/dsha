@@ -119,6 +119,58 @@ const stat = http.createServer((req, res) => {
     await page.getByRole('button', { name: 'Sessions' }).click(); await page.getByRole('button', { name: 'Settings' }).click();
     await page.locator('#bal').filter({ hasText: '5.73 USD' }).waitFor();
     await page.waitForTimeout(400); await page.screenshot({ path: shot('settings') });
+    await page.locator('#scrim').click({ position: { x: 200, y: 40 } }); await page.waitForTimeout(250);
+
+    // Foldable: unfolded (book) → dual pane split at the hinge.
+    await page.setViewportSize({ width: 748, height: 880 });
+    await page.evaluate(() => window.native.posture(180, 374, 440));
+    await page.waitForTimeout(250);
+    assert.ok(await page.evaluate(() => document.body.classList.contains('wide')));
+    assert.ok(await page.locator('#inspector').isVisible());
+    assert.equal(await page.locator('#menuBtn').isVisible(), false);
+    const paneW = await page.locator('#chatPane').evaluate(e => e.getBoundingClientRect().width);
+    assert.ok(Math.abs(paneW - 374) < 2, 'chat pane ends at the hinge: ' + paneW);
+    const openBefore = await page.locator('.tool.open').count();
+    await page.locator('.tool').first().locator('.head').click();
+    await page.locator('#ibody .cmdline', { hasText: '$ ls -la && cat README.md' }).waitFor();
+    assert.match(await page.locator('#ibody .ipre').textContent(), /# demo/);
+    assert.equal(await page.locator('.tool.open').count(), openBefore); // wide mode pins to the inspector instead of expanding inline
+    await page.screenshot({ path: shot('unfolded') });
+    await page.locator('#itabs [data-t=stats]').click();
+    await page.locator('.stat', { hasText: 'Cache hits' }).waitFor();
+    assert.match(await page.locator('.files').textContent(), /README\.md/);
+    await page.screenshot({ path: shot('unfolded-stats') });
+    await page.locator('#itabs button', { hasText: 'Activity' }).click();
+
+    // Flex mode: half-folded in landscape → chat above the hinge, deck below; approve from the deck.
+    await page.locator('#modeChip').click(); await page.getByRole('button', { name: 'Ask' }).click(); await page.waitForTimeout(200);
+    await page.setViewportSize({ width: 880, height: 748 });
+    await page.evaluate(() => window.native.posture(95, 440, 374));
+    await page.waitForTimeout(250);
+    assert.ok(await page.evaluate(() => document.body.classList.contains('tabletop')));
+    const deckTop = await page.locator('#deck').evaluate(e => e.getBoundingClientRect().top);
+    assert.ok(Math.abs(deckTop - 374) < 3, 'deck starts at the hinge: ' + deckTop);
+    await page.screenshot({ path: shot('tabletop-idle') });
+    script = [
+      [delta({ reasoning_content: 'Run it.' }), delta({ tool_calls: [{ index: 0, id: 'f1', type: 'function', function: { name: 'bash', arguments: '{"command":"for i in 1 2 3; do echo step $i; done"}' } }] })],
+      [...chunk('Ran the loop: **three steps**, all fine.', 6).map(d => delta({ content: d })), usage],
+    ];
+    await page.locator('#input').fill('Run a quick loop');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await page.locator('#deckLive .dl-ask').waitFor();
+    await page.screenshot({ path: shot('tabletop-approval') });
+    await page.locator('#deckLive .allow').click();
+    await page.waitForFunction(() => !document.body.classList.contains('running') && document.querySelectorAll('.turnfoot').length >= 2);
+    assert.match(await page.locator('.tool').last().locator('.res').textContent(), /step 3/);
+    await page.screenshot({ path: shot('tabletop') });
+
+    // Cover screen: folded shut → single column, compact.
+    await page.setViewportSize({ width: 360, height: 780 });
+    await page.evaluate(() => window.native.posture(0, 180, 390));
+    await page.waitForTimeout(250);
+    assert.ok(await page.evaluate(() => !document.body.classList.contains('wide') && !document.body.classList.contains('tabletop')));
+    assert.ok(await page.locator('#menuBtn').isVisible());
+    await page.screenshot({ path: shot('cover') });
     assert.deepEqual(errors, []);
     console.log('ui ok');
   } finally {

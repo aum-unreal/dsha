@@ -7,6 +7,8 @@ Several agents (Claude Code, Codex) may work here. GitHub is the shared record: 
 - `server/` — dsh (Node 24, no npm deps). `dsh.mjs` CLI; `lib/deepseek.mjs` API client + prices; `lib/agent.mjs` loop, permission gate, event log; `lib/tools.mjs`; `lib/server.mjs` HTTP/SSE API; `lib/store.mjs` ~/.dsh state. `~/.local/bin/dsh` execs `server/dsh.mjs` directly, so server edits go live on `dsh restart`.
 - `src/dev/aum/dsha/Sse.java` — SSE batching, plain Java so `tests/SseCheck.java` runs it on the JVM.
 - `src/dev/aum/dsha/MainActivity.java` — main native class: WebView on `https://dsha.local/`, a `Native` bridge doing HTTP + SSE to dsh, Termux RUN_COMMAND pairing, notifications, share intent.
+- Fonts: `assets/fonts/*.ttf` are fontTools Latin subsets of Nightwire's pinned OFL files (Fraunces, DM Sans, JetBrains Mono, Space Mono); notices appended to `assets/vendor/LICENSES.txt`.
+- Layout modes (`relayout()` in app.js): phone, `wide` (≥680px or two side-by-side viewport segments; split at the hinge from `native.posture`), `tabletop` (hinge half-open and landscape). `tests/ui.cjs` checks all three; `?posture=wide|tabletop` forces one in a browser.
 - `assets/` — the web UI (`app.js`, `app.css`, `index.html`), vendored markdown-it / DOMPurify / highlight.js in `assets/vendor/` (copied from Nightwire's pinned node_modules; notices in `LICENSES.txt`).
 
 ## Rules
