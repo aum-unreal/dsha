@@ -105,3 +105,44 @@ test('plugins: add, disable, edit, remove; mcp.json keeps other keys', async () 
   assert.deepEqual(r.json.map(s => s.name), ['web']);
   assert.deepEqual(await (await api('GET', '/api/mcp/web/tools')).json, []);
 });
+
+test('built-in skills: dsh-evolve and dsh-memory-evolve ship, load, toggle, cannot be deleted', async () => {
+  let r = await api('GET', '/api/skills?cwd=' + encodeURIComponent(work));
+  const ids = r.json.skills.filter(s => s.source === 'builtin').map(s => s.id);
+  assert.deepEqual(ids, ['builtin:dsh-evolve', 'builtin:dsh-memory-evolve']);
+  assert.match(await system(), /- dsh-evolve: Improve how dsh works from experience/);
+  assert.match(loadSkill(work, 'dsh-memory-evolve'), /# Memory for dsh[\s\S]*MEMORY\.md/);
+  assert.equal((await api('POST', '/api/skills/delete', { cwd: work, id: 'builtin:dsh-evolve' })).status, 400);
+  await api('PATCH', '/api/skills', { cwd: work, id: 'builtin:dsh-evolve', enabled: false });
+  assert.doesNotMatch(await system(), /- dsh-evolve:/);
+  await api('PATCH', '/api/skills', { cwd: work, id: 'builtin:dsh-evolve', enabled: true });
+});
+
+test('memory: index joins the prompt, files list and delete with their index line', async () => {
+  const dir = path.join(process.env.DSH_HOME, 'memory'); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'fold-phone.md'), '---\nname: fold-phone\ndescription: User is on a Galaxy Z Fold\ntype: user\nupdated: 2026-11-01\n---\nInner screen about 750 CSS px wide.\n');
+  fs.writeFileSync(path.join(dir, 'no-gradients.md'), '---\nname: no-gradients\ndescription: User dislikes gradient UI\ntype: feedback\n---\nKeep surfaces flat.\n');
+  fs.writeFileSync(path.join(dir, 'MEMORY.md'), '- [Fold phone](fold-phone.md) — judge layouts at 750px\n- [No gradients](no-gradients.md) — flat UI only\n');
+  assert.match(await system(), /Memory index[\s\S]*\[Fold phone\]\(fold-phone\.md\)/);
+  let r = await api('GET', '/api/memory');
+  assert.deepEqual(r.json.items.map(m => [m.file, m.type]), [['fold-phone.md', 'user'], ['no-gradients.md', 'feedback']]);
+  assert.match((await api('GET', '/api/memory/read?file=fold-phone.md')).json.content, /750 CSS px/);
+  assert.equal((await api('GET', '/api/memory/read?file=../config.json')).status, 400);
+  r = await api('POST', '/api/memory/delete', { file: 'no-gradients.md' });
+  assert.deepEqual(r.json.items.map(m => m.file), ['fold-phone.md']);
+  assert.doesNotMatch(r.json.index, /no-gradients/);
+  assert.doesNotMatch(await system(), /No gradients/);
+});
+
+test('session_log: compact digest marks failures and denials', async () => {
+  const { sessionDigest, TOOLS } = await import('../lib/tools.mjs');
+  const s = { id: 'x1', title: 'Fix build', cwd: work, meta: { a: { ok: false }, b: { ok: true, denied: true } }, messages: [
+    { role: 'user', content: 'Build it' },
+    { role: 'assistant', content: '', tool_calls: [{ id: 'a', function: { name: 'bash', arguments: '{"command":"make"}' } }] },
+    { role: 'tool', tool_call_id: 'a', content: 'make: *** No rule\n[exit 2]' },
+    { role: 'assistant', content: '', tool_calls: [{ id: 'b', function: { name: 'bash', arguments: '{"command":"rm -rf build"}' } }] },
+    { role: 'tool', tool_call_id: 'b', content: 'The user denied this tool call.' },
+    { role: 'assistant', content: 'Use ./build.sh instead.' }] };
+  assert.equal(sessionDigest(s), `Session x1: Fix build (${work})\nUSER: Build it\nTOOL bash: make\n  FAILED: make: *** No rule\n[exit 2]\nTOOL bash: rm -rf build\n  DENIED by the user\nDSH: Use ./build.sh instead.`);
+  assert.match(await TOOLS.session_log.run({ list: true }, {}), /No sessions\.|\|/);
+});

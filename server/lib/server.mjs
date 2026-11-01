@@ -9,10 +9,10 @@ import { loadConfig, saveConfig, readKey, writeKey, listSessions, createSession,
 import { runtime, dropRuntime, activeRuns } from './agent.mjs';
 import { DeepSeek } from './deepseek.mjs';
 import { Mcp, loadMcpConfig, saveMcpConfig } from './mcp.mjs';
-import { listSkills, readSkill, setSkill, setClaudeSkills, createSkill, deleteSkill, instructionFiles, writeInstructions } from './skills.mjs';
+import { listSkills, readSkill, setSkill, setClaudeSkills, createSkill, deleteSkill, instructionFiles, writeInstructions, listMemory, readMemory, deleteMemory } from './skills.mjs';
 import { systemPrompt } from './agent.mjs';
 
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
 
 export function createServer({ config = loadConfig } = {}) {
   let cfg = config();
@@ -61,6 +61,9 @@ export function createServer({ config = loadConfig } = {}) {
     ['POST', /^\/api\/skills$/, (_, b) => { const cwd = cwdOf(b.cwd); const id = user(() => createSkill(cwd, b)); return { id, ...listSkills(cwd) }; }],
     ['PATCH', /^\/api\/skills$/, (_, b) => { if ('claude' in b) setClaudeSkills(b.claude); if (b.id) setSkill(String(b.id), !!b.enabled); return listSkills(cwdOf(b.cwd)); }],
     ['POST', /^\/api\/skills\/delete$/, (_, b) => { const cwd = cwdOf(b.cwd); user(() => deleteSkill(cwd, String(b.id))); return listSkills(cwd); }],
+    ['GET', /^\/api\/memory$/, () => listMemory()],
+    ['GET', /^\/api\/memory\/read$/, q => user(() => readMemory(q.query.get('file')))],
+    ['POST', /^\/api\/memory\/delete$/, (_, b) => { user(() => deleteMemory(String(b.file))); return listMemory(); }],
     ['GET', /^\/api\/instructions$/, q => instructionFiles(cwdOf(q.query.get('cwd')))],
     ['PUT', /^\/api\/instructions$/, (_, b) => { const cwd = cwdOf(b.cwd); user(() => writeInstructions(cwd, String(b.key), b.content)); return instructionFiles(cwd); }],
     ['GET', /^\/api\/system$/, q => { const id = q.query.get('session'); return { text: id ? systemPrompt(rt(id).s, mcp.prompt()) : systemPrompt({ cwd: cwdOf(q.query.get('cwd')) }, mcp.prompt()) }; }],

@@ -360,7 +360,8 @@ body.sheet #scrim { z-index: 28; }
 .pagebar { min-height: var(--top); display: flex; align-items: center; gap: 4px; padding: 4px 6px; flex: none; }
 .ptitle { flex: 1; min-width: 0; padding: 0 4px; }
 #pageTitle { font: 600 16px/20px var(--font); }
-#ptabs { padding: 0 16px; }
+#ptabs { padding: 0 16px; gap: 18px; overflow-x: auto; scrollbar-width: none; }
+#ptabs button { flex: none; }
 #pbody { flex: 1; overflow-y: auto; padding: 16px 16px 40px; }
 #pbody > * { max-width: 720px; margin-left: auto; margin-right: auto; }
 .lead { color: var(--muted); font-size: var(--fs-read); line-height: 22px; margin: 4px auto 20px; }

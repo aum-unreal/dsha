@@ -6,6 +6,7 @@
 // descriptions cost context. Sources, first match of a name wins:
 //   project  <cwd>/.dsh/skills/<name>/SKILL.md
 //   dsh      ~/.dsh/skills/<name>/SKILL.md
+//   builtin  server/skills/<name>/SKILL.md      (ship with dsh: dsh-evolve, dsh-memory-evolve)
 //   claude   ~/.claude/skills/<name>/SKILL.md   (off until the user turns the source on)
 // State lives in config.json as `skills: { off: [ids], claude: bool }`; an id is `<source>:<name>`.
 //
@@ -13,15 +14,18 @@
 // ~/.dsh, and per project) plus the cross-agent AGENTS.md and CLAUDE.md from the working directory.
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { HOME, loadConfig, saveConfig, writeAtomic } from './store.mjs';
 import { clip } from './tools.mjs';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const PROMPT_MAX = 60;
+const BUILTIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills');
 
 const sources = cwd => [
   ['project', path.join(cwd, '.dsh', 'skills')],
   ['dsh', path.join(HOME, 'skills')],
+  ['builtin', BUILTIN],
   ['claude', path.join(process.env.HOME || '', '.claude', 'skills')],
 ];
 
@@ -104,6 +108,7 @@ export function deleteSkill(cwd, id) {
   const s = listSkills(cwd).skills.find(x => x.id === id);
   if (!s) throw new Error('No such skill');
   if (s.source === 'claude') throw new Error('Claude Code skills are managed by Claude Code; turn them off here instead');
+  if (s.source === 'builtin') throw new Error('Built-in skills ship with dsh; turn them off instead');
   const root = s.source === 'project' ? path.join(cwd, '.dsh', 'skills') : path.join(HOME, 'skills');
   if (path.dirname(s.dir) !== root) throw new Error('Refusing to delete outside the skills folder');
   fs.rmSync(s.dir, { recursive: true, force: true });
@@ -133,4 +138,36 @@ export function writeInstructions(cwd, key, content) {
 export function contextFiles(cwd) {
   return instructionFiles(cwd).filter(f => f.exists && f.content.trim()).map(f =>
     `<file path="${f.path}"${f.scope === 'global' ? ' scope="every session"' : ''}>\n${clip(f.content, 20000)}\n</file>`).join('\n');
+}
+
+/* ---------- memory: ~/.dsh/memory, one file per memory plus a MEMORY.md index ---------- */
+// The dsh-memory-evolve skill tells the model how to write it; dsh only puts the index in the prompt.
+export const MEMORY_DIR = path.join(HOME, 'memory');
+const SLUG_RE = /^[\w.-]+\.md$/;
+
+export function memoryPrompt() {
+  let index = ''; try { index = fs.readFileSync(path.join(MEMORY_DIR, 'MEMORY.md'), 'utf8').trim(); } catch {}
+  return index ? clip(index, 6000) : '';
+}
+
+export function listMemory() {
+  let names = []; try { names = fs.readdirSync(MEMORY_DIR).filter(n => SLUG_RE.test(n) && n !== 'MEMORY.md').sort(); } catch {}
+  const items = names.map(file => {
+    const text = fs.readFileSync(path.join(MEMORY_DIR, file), 'utf8'), { meta } = parseSkill(text);
+    return { file, name: meta.name || file.replace(/\.md$/, ''), description: meta.description || '', type: meta.type || '', updated: meta.updated || '' };
+  });
+  return { dir: MEMORY_DIR, index: memoryPrompt(), items };
+}
+
+export function readMemory(file) {
+  if (!SLUG_RE.test(String(file))) throw new Error('Bad memory name');
+  try { return { file, content: fs.readFileSync(path.join(MEMORY_DIR, file), 'utf8') }; } catch { throw new Error('No such memory'); }
+}
+
+// Delete a memory and its index line (any line linking to the file).
+export function deleteMemory(file) {
+  if (!SLUG_RE.test(String(file)) || file === 'MEMORY.md') throw new Error('Bad memory name');
+  fs.rmSync(path.join(MEMORY_DIR, file), { force: true });
+  const idx = path.join(MEMORY_DIR, 'MEMORY.md');
+  try { const t = fs.readFileSync(idx, 'utf8'); writeAtomic(idx, t.split('\n').filter(l => !l.includes(`(${file})`)).join('\n')); } catch {}
 }

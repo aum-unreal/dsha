@@ -7,7 +7,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { DeepSeek, cost } from './deepseek.mjs';
 import { TOOLS, schemas, summarize, clip } from './tools.mjs';
-import { contextFiles, skillPrompt } from './skills.mjs';
+import { contextFiles, skillPrompt, memoryPrompt } from './skills.mjs';
 import { saveSession, loadSession, readKey } from './store.mjs';
 
 const runtimes = new Map();
@@ -23,7 +23,7 @@ export const dropRuntime = id => { runtimes.get(id)?.stop(); runtimes.delete(id)
 export const activeRuns = () => [...runtimes.values()].filter(r => r.running).map(r => r.s.id);
 
 export function systemPrompt(s, mcp = '') {
-  const files = contextFiles(s.cwd), skills = skillPrompt(s.cwd);
+  const files = contextFiles(s.cwd), skills = skillPrompt(s.cwd), memory = memoryPrompt();
   return `You are dsh, a coding and operations agent running on the user's own machine (${os.platform()} ${os.arch()}${process.env.PREFIX ? ', Termux on Android' : ''}) and talking to them through the DSHA phone app.
 Working directory: ${s.cwd}
 Date: ${new Date().toISOString().slice(0, 10)}
@@ -35,7 +35,7 @@ How to work:
 - For multi-step tasks keep a todo list with todo_write.
 - Tool calls may be denied by the user; if so, don't retry the same call — adjust or ask.
 - Don't run destructive commands (rm -rf, force-push, wiping data) unless the user clearly asked.
-- Report outcomes faithfully: if a command failed, say so.${mcp ? '\n\nExternal tool servers (MCP) connected; their tools sit next to the built-ins and follow the same approval rules:\n' + mcp : ''}${skills ? '\n\nSkills: load one with the skill tool before a task it covers.\n' + skills : ''}${files ? '\n\nInstructions from the user (global DSH.md) and the working directory (DSH.md, AGENTS.md, CLAUDE.md):\n' + files : ''}`;
+- Report outcomes faithfully: if a command failed, say so.${mcp ? '\n\nExternal tool servers (MCP) connected; their tools sit next to the built-ins and follow the same approval rules:\n' + mcp : ''}${skills ? '\n\nSkills: load one with the skill tool before a task it covers.\n' + skills : ''}${memory ? '\n\nMemory index (~/.dsh/memory/MEMORY.md; read a memory file when its line is relevant, and keep memory current with the dsh-memory-evolve skill):\n' + memory : ''}${files ? '\n\nInstructions from the user (global DSH.md) and the working directory (DSH.md, AGENTS.md, CLAUDE.md):\n' + files : ''}`;
 }
 
 export class Runtime {

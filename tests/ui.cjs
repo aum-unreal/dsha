@@ -51,6 +51,9 @@ const stat = http.createServer((req, res) => {
 (async () => {
   await new Promise(r => mock.listen(MOCK, '127.0.0.1', r));
   await new Promise(r => stat.listen(STATIC, '127.0.0.1', r));
+  const mem = path.join(tmp, 'home', 'memory'); fs.mkdirSync(mem, { recursive: true });
+  fs.writeFileSync(path.join(mem, 'fold-phone.md'), '---\nname: fold-phone\ndescription: User is on a Galaxy Z Fold; judge layouts at 750 CSS px\ntype: user\n---\nInner screen about 750 CSS px wide.\n');
+  fs.writeFileSync(path.join(mem, 'MEMORY.md'), '- [Fold phone](fold-phone.md) — judge layouts at 750px\n');
   const dsh = spawn(process.execPath, [path.resolve(__dirname, '../server/dsh.mjs'), 'serve'], { env: { ...process.env, HOME: tmp, DSH_HOME: path.join(tmp, 'home'), DSH_KEY_FILE: path.join(tmp, 'key') }, stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise(r => dsh.stdout.once('data', r));
   const browser = await chromium.launch({ ...launch(), headless: true });
@@ -241,7 +244,7 @@ const stat = http.createServer((req, res) => {
     await page.waitForTimeout(250); await page.screenshot({ path: shot('agent-plugins') });
 
     await page.locator('#ptabs [data-t=skills]').click();
-    await page.getByRole('button', { name: 'New skill' }).click();
+    await page.getByRole('button', { name: 'New skill', exact: true }).click();
     await page.locator('#skName').fill('release-apk'); await page.locator('#skDesc').fill('Building and shipping a new APK version');
     await page.locator('#skText').fill('1. Bump the version.\n2. Run `./build.sh`.');
     await page.locator('#sheet [data-a=save]').click();
@@ -254,6 +257,17 @@ const stat = http.createServer((req, res) => {
     await page.locator('[data-open="dsh:release-apk"]').click();
     await page.locator('#skBody li', { hasText: 'Bump the version' }).waitFor();
     await page.locator('#scrim').click({ position: { x: 180, y: 20 } }); await page.waitForTimeout(250);
+
+    assert.ok(await page.locator('.ghead h3', { hasText: 'Built in' }).isVisible());
+    assert.equal(await page.getByRole('switch', { name: 'Use dsh-evolve' }).getAttribute('aria-checked'), 'true');
+
+    await page.locator('#ptabs [data-t=memory]').click();
+    await page.locator('#pbody .rows button', { hasText: 'fold-phone' }).click();
+    await page.locator('#memBody', { hasText: 'Inner screen about 750 CSS px wide.' }).waitFor();
+    await page.waitForTimeout(250); await page.screenshot({ path: shot('agent-memory') });
+    page.once('dialog', d => d.accept());
+    await page.getByRole('button', { name: 'Forget this' }).click();
+    await page.locator('#pbody .empty-note', { hasText: 'Nothing saved yet' }).waitFor();
 
     await page.locator('#ptabs [data-t=instructions]').click();
     await page.locator('.ifile h3', { hasText: 'CLAUDE.md' }).waitFor();
@@ -269,6 +283,10 @@ const stat = http.createServer((req, res) => {
     await page.locator('#scrim').click({ position: { x: 180, y: 20 } }); await page.waitForTimeout(250);
     await page.getByRole('button', { name: 'Back' }).click();
     assert.equal(await page.locator('#page').isVisible(), false);
+    await page.locator('#agentBtn').evaluate(b => b.click()); await page.locator('#ptabs [data-t=memory]').click();
+    await page.getByRole('button', { name: 'Learn from session' }).click();
+    assert.equal(await page.locator('#page').isVisible(), false);
+    assert.equal(await page.locator('#input').inputValue(), 'Use the dsh-evolve skill on this session.');
     assert.deepEqual(errors, []);
     console.log('ui ok');
   } finally {

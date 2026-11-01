@@ -23,10 +23,10 @@ const I = {
   share: svg('<path d="M12 3v13M7 8l5-5 5 5"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/>'), trash: svg('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'), link: svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
 };
 const MARK = '<svg class="mark" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="6" fill="#fff" stroke="none"/><path d="M6.5 13c1.8-3.4 3.7-3.4 5.5 0s3.7 3.4 5.5 0" stroke="#000" stroke-width="2.2"/></svg>';
-const TOOL_NAME = { bash: 'Shell', read_file: 'Read file', write_file: 'Write file', edit_file: 'Edit file', list_dir: 'List folder', grep: 'Search', glob: 'Find files', web_fetch: 'Fetch', todo_write: 'Task list', skill: 'Skill' };
+const TOOL_NAME = { bash: 'Shell', read_file: 'Read file', write_file: 'Write file', edit_file: 'Edit file', list_dir: 'List folder', grep: 'Search', glob: 'Find files', web_fetch: 'Fetch', todo_write: 'Task list', skill: 'Skill', session_log: 'Session log' };
 const tname = n => TOOL_NAME[n] || n.replace(/_/g, ' ');
 const TODO_ICON = { completed: I.check, in_progress: I.half, pending: I.circle };
-const TOOL_ICON = { bash: I.term, read_file: I.file, write_file: I.pen, edit_file: I.pen, list_dir: I.folder, grep: I.search, glob: I.search, web_fetch: I.globe, todo_write: I.list, skill: I.book };
+const TOOL_ICON = { bash: I.term, read_file: I.file, write_file: I.pen, edit_file: I.pen, list_dir: I.folder, grep: I.search, glob: I.search, web_fetch: I.globe, todo_write: I.list, skill: I.book, session_log: I.activity };
 const MODES = { ask: ['Ask', 'Asks before shell, edits and web fetches'], edits: ['Edits', 'File edits run freely; shell still asks'], auto: ['Auto', 'Everything runs without asking'] };
 
 /* ---------- transport ---------- */
@@ -465,9 +465,9 @@ function sharedText(t) {
 // A full-screen page over the chat, since it is managed rather than glanced at. Everything is read
 // for the open session's folder (or the default folder), because skills and instruction files can
 // live in the project as well as in ~/.dsh.
-const PTABS = [['plugins', 'Plugins'], ['skills', 'Skills'], ['instructions', 'Instructions']];
+const PTABS = [['plugins', 'Plugins'], ['skills', 'Skills'], ['memory', 'Memory'], ['instructions', 'Instructions']];
 const RISK = { read: 'Read only', edit: 'Edits files', exec: 'Runs anything' };
-const SOURCES = { project: ['This project', '.dsh/skills in the session folder'], dsh: ['All projects', '~/.dsh/skills'], claude: ['Claude Code', '~/.claude/skills'] };
+const SOURCES = { project: ['This project', '.dsh/skills in the session folder'], dsh: ['All projects', '~/.dsh/skills'], builtin: ['Built in', 'Ship with dsh'], claude: ['Claude Code', '~/.claude/skills'] };
 const pageCwd = () => S.cur?.cwd || S.cfg?.cwd || home();
 const cwdQ = () => 'cwd=' + encodeURIComponent(pageCwd());
 const sw = (on, attrs) => `<button class="switch${on ? ' on' : ''}" role="switch" aria-checked="${on}" ${attrs}><i></i></button>`;
@@ -480,7 +480,7 @@ function agentPage(tab = S.ptab || 'plugins') {
   $('#ptabs').innerHTML = PTABS.map(([k, l]) => `<button role="tab" data-t="${k}" class="${k === tab ? 'on' : ''}" aria-selected="${k === tab}">${l}</button>`).join('');
   $('#ptabs').querySelectorAll('button').forEach(b => b.onclick = () => { haptic(); agentPage(b.dataset.t); });
   $('#pbody').scrollTop = 0;
-  ({ plugins: pluginsTab, skills: skillsTab, instructions: instructionsTab })[tab]();
+  ({ plugins: pluginsTab, skills: skillsTab, memory: memoryTab, instructions: instructionsTab })[tab]();
 }
 function closePage() { $('#page').hidden = true; document.body.classList.remove('paged'); }
 const pbody = html => { if (html != null) $('#pbody').innerHTML = html; return $('#pbody'); };
@@ -561,7 +561,7 @@ function drawSkills() {
   };
   const on = skills.filter(x => x.enabled && !x.shadowed).length;
   pbody(`<p class="lead">Instructions for a kind of task. dsh sees each skill's name and description, and loads the full instructions when a task matches. ${on} in use.</p>
-    <div class="group">${group('project')}</div><div class="group">${group('dsh')}</div>${skills.some(x => x.source === 'claude') ? `<div class="group">${group('claude')}</div>` : ''}
+    <div class="group">${group('project')}</div><div class="group">${group('dsh')}</div>${skills.some(x => x.source === 'builtin') ? `<div class="group">${group('builtin')}</div>` : ''}${skills.some(x => x.source === 'claude') ? `<div class="group">${group('claude')}</div>` : ''}
     <div class="rowbtns"><button class="primary" id="skNew">${I.plus}New skill</button></div>`);
   const box = pbody();
   box.querySelectorAll('[data-open]').forEach(b => b.onclick = () => skillSheet(b.dataset.open));
@@ -575,7 +575,9 @@ async function skillSheet(id) {
   const b = sheet(`<h3>${esc(s.name)}</h3><p class="hint" style="margin:-8px 0 12px">${esc(SOURCES[s.source][0])} · <code>${esc(short(s.file))}</code></p>
     ${s.description ? `<div class="kvs"><div class="kv"><span>Used when</span><b style="text-align:left">${esc(s.description)}</b></div></div>` : ''}
     <h4>Instructions</h4><div class="mdbox md" id="skBody"></div>
-    <div class="rowbtns"><button class="secondary" data-a="toggle">${s.enabled ? 'Turn off' : 'Turn on'}</button>${s.source !== 'claude' ? `<button class="ghost-danger" data-a="del">${I.trash}Delete</button>` : ''}</div>`, {
+    <div class="rowbtns"><button class="secondary" data-a="toggle">${s.enabled ? 'Turn off' : 'Turn on'}</button>${s.enabled ? '<button class="primary" data-a="use">Use in chat</button>' : ''}</div>
+    ${s.source === 'project' || s.source === 'dsh' ? `<button class="ghost-danger wide" data-a="del">${I.trash}Delete</button>` : ''}`, {
+    use: () => askChat(`Use the ${s.name} skill. `),
     toggle: async () => { closeSheet(); try { S.skills = await api('PATCH', '/api/skills', { cwd: pageCwd(), id, enabled: !s.enabled }); drawSkills(); } catch (e) { toast(e.message); } },
     del: async () => { if (!confirm(`Delete the skill ${s.name}? This removes its folder.`)) return; closeSheet(); try { S.skills = await api('POST', '/api/skills/delete', { cwd: pageCwd(), id }); drawSkills(); toast('Deleted'); } catch (e) { toast(e.message); } },
   });
@@ -596,6 +598,33 @@ function skillForm() {
       catch (e) { $('#skErr').textContent = e.message; el.disabled = false; }
     },
   });
+}
+
+// Leave the page with a message started in the composer, for the user to finish or send.
+function askChat(text) { closeSheet(); closePage(); input.value = text; grow(); syncSend(); input.focus(); input.setSelectionRange(text.length, text.length); }
+
+/* memory */
+async function memoryTab() {
+  pbody('<p class="hint">Loading memory…</p>');
+  let m; try { m = await api('GET', '/api/memory'); } catch (e) { return pbody(`<p class="err-text">${esc(e.message)}</p>`); }
+  if (!pageOn('memory')) return;
+  const TYPE = { user: 'About you', feedback: 'How to work', project: 'Project', reference: 'Reference' };
+  pbody(`<p class="lead">What dsh remembers between sessions, kept in <code>~/.dsh/memory</code>. The index goes into every session; dsh reads a memory when it's relevant. It saves preferences, corrections and lasting facts as you work, using the dsh-memory-evolve skill.</p>
+    ${m.items.length ? `<div class="rows">${m.items.map(x => `<button data-f="${esc(x.file)}"><span class="rx"><span class="r1">${esc(x.name)}</span><span class="r2">${esc(x.description || 'No description')}</span></span><span class="rv">${esc(TYPE[x.type] || x.type)}</span></button>`).join('')}</div>`
+      : '<div class="empty-note">Nothing saved yet. Tell dsh something to remember, or correct how it works, and it lands here.</div>'}
+    <div class="rowbtns"><button class="secondary" id="memTidy">Tidy memory</button><button class="primary" id="memLearn">Learn from session</button></div>
+    <p class="hint">Tidy merges duplicates and drops stale memories. Learn runs dsh-evolve: it reviews the session for mistakes and corrections and proposes skills, rules or memories before writing anything.</p>`);
+  pbody().querySelectorAll('[data-f]').forEach(b => b.onclick = () => memorySheet(b.dataset.f));
+  $('#memTidy').onclick = () => askChat('Use the dsh-memory-evolve skill to tidy my memory.');
+  $('#memLearn').onclick = () => askChat('Use the dsh-evolve skill on this session.');
+}
+async function memorySheet(file) {
+  let r; try { r = await api('GET', '/api/memory/read?file=' + encodeURIComponent(file)); } catch (e) { return toast(e.message); }
+  const b = sheet(`<h3>${esc(file.replace(/\.md$/, ''))}</h3><p class="hint" style="margin:-8px 0 12px"><code>~/.dsh/memory/${esc(file)}</code></p><div class="mdbox md" id="memBody"></div>
+    <button class="ghost-danger wide" data-a="del">${I.trash}Forget this</button>`, {
+    del: async () => { if (!confirm('Forget this memory? dsh stops seeing it from the next step.')) return; closeSheet(); try { await api('POST', '/api/memory/delete', { file }); toast('Forgotten'); } catch (e) { toast(e.message); } memoryTab(); },
+  });
+  renderMd(b.querySelector('#memBody'), r.content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, ''));
 }
 
 /* instruction files */

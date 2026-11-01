@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { loadSkill } from './skills.mjs';
+import { listSessions, loadSession } from './store.mjs';
 
 const MAX_OUT = 30000;
 const PREFIX = process.env.PREFIX || '/usr';
@@ -145,6 +146,17 @@ export const TOOLS = {
     parameters: { type: 'object', properties: { todos: { type: 'array', items: { type: 'object', properties: { content: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] } }, required: ['content', 'status'] } } }, required: ['todos'] },
     async run(a, ctx) { ctx.session.todos = a.todos; return 'Todo list updated.'; },
   },
+  session_log: {
+    risk: 'read',
+    description: 'Read past dsh sessions in compact form (user messages, replies, tool calls, failures, denials), for learning from them. list: true lists recent sessions; otherwise reads the session with this id, or the current one.',
+    parameters: { type: 'object', properties: { list: { type: 'boolean' }, id: { type: 'string', description: 'Session id from the list; omit for the current session' } } },
+    async run(a, ctx) {
+      if (a.list) return listSessions().slice(0, 20).map(s => `${s.id} | ${new Date(s.updated).toISOString().slice(0, 16).replace('T', ' ')} | ${s.turns} turns | ${s.cwd} | ${s.title}`).join('\n') || 'No sessions.';
+      const s = a.id ? loadSession(String(a.id)) : ctx.session;
+      if (!s) throw new Error('No such session');
+      return clip(sessionDigest(s), 30000);
+    },
+  },
   skill: {
     risk: 'read',
     description: 'Load a skill: the full instructions for a kind of task, listed under "Skills" in the system prompt. Load the matching skill before starting such a task, then follow it.',
@@ -158,6 +170,23 @@ export function htmlText(h) {
     .replace(/<\/(p|div|h\d|li|tr|br|section|article|pre)>/gi, '\n').replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
     .replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*\n+/g, '\n\n').trim();
+}
+
+// One line per event of a session, for the model to learn from without the full transcript.
+export function sessionDigest(s) {
+  const out = [`Session ${s.id}: ${s.title} (${s.cwd})`], meta = s.meta || {};
+  for (const m of s.messages) {
+    if (m.role === 'user') out.push('USER: ' + clip(String(m.content), 800));
+    else if (m.role === 'assistant') {
+      if (m.content) out.push('DSH: ' + clip(m.content, 600));
+      for (const c of m.tool_calls || []) { let args = {}; try { args = JSON.parse(c.function.arguments); } catch {} out.push(`TOOL ${c.function.name}: ${clip(summarize(c.function.name, args) || '', 300)}`); }
+    } else if (m.role === 'tool') {
+      const mm = meta[m.tool_call_id] || {};
+      if (mm.denied) out.push('  DENIED by the user');
+      else if (mm.ok === false) out.push('  FAILED: ' + clip(String(m.content), 400));
+    }
+  }
+  return out.join('\n');
 }
 
 export function schemas() {
@@ -174,6 +203,7 @@ export function summarize(name, a = {}) {
     case 'web_fetch': return a.url;
     case 'todo_write': return `${(a.todos || []).length} items`;
     case 'skill': return a.name;
+    case 'session_log': return a.list ? 'recent sessions' : a.id || 'this session';
     default: return JSON.stringify(a).slice(0, 200);
   }
 }
