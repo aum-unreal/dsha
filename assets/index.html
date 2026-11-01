@@ -49,9 +49,15 @@
   <div class="drawerHead"><div class="brand"><span class="logo"></span><span class="wordmark">DSHA</span></div><button class="icon" id="settingsBtn" aria-label="Settings"></button></div>
   <button id="newBtn" class="primary wide"></button>
   <div id="sessions"></div>
+  <div class="rows agentrow"><button id="agentBtn"></button></div>
   <button id="balBtn" class="balrow" aria-label="Usage and balance"></button>
   <div id="conn" class="conn"></div>
 </aside>
+<section id="page" hidden aria-label="Agent setup">
+  <header class="pagebar"><button class="icon" id="pageBack" aria-label="Back"></button><div class="ptitle"><div id="pageTitle">Agent</div><div class="sub" id="pageSub"></div></div></header>
+  <nav id="ptabs" role="tablist"></nav>
+  <div id="pbody"></div>
+</section>
 <div id="scrim"></div>
 <div id="sheet" role="dialog" aria-modal="true" hidden><div class="grab"></div><div id="sheetBody"></div></div>
 <div id="toast" role="status"></div>

@@ -162,8 +162,8 @@ svg { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; s
 .group { margin-top: 28px; }
 .group h3 { font: 500 13px/18px var(--font); color: var(--muted); margin: 0 0 8px 4px; }
 .rows { background: var(--surface); border-radius: var(--radius-card); overflow: hidden; }
-.rows > button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 16px; text-align: left; position: relative; }
-.rows > button + button::before { content: ""; position: absolute; left: 16px; right: 0; top: 0; height: 1px; background: var(--rule); }
+.rows > button, .rows > .row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 16px; text-align: left; position: relative; }
+.rows > :is(button, .row) + :is(button, .row)::before { content: ""; position: absolute; left: 16px; right: 0; top: 0; height: 1px; background: var(--rule); }
 .rows > button:active { background: var(--raised); }
 .rows > button > svg { color: var(--faint); width: 16px; height: 16px; }
 .rows .rx { flex: 1; min-width: 0; }
@@ -246,7 +246,7 @@ body.drawer #scrim, body.sheet #scrim { opacity: 1; pointer-events: auto; }
 #sheet h3 { margin: 10px 0 16px; font: 600 var(--fs-title)/26px var(--font); letter-spacing: -.01em; }
 #sheet h4 { margin: 22px 0 8px; font: 500 13px/18px var(--font); color: var(--muted); }
 #sheet .rows { background: var(--raised); border-radius: var(--radius-inner); }
-#sheet .rows > button + button::before { background: var(--rule-raised); }
+#sheet .rows > :is(button, .row) + :is(button, .row)::before { background: var(--rule-raised); }
 .seg { display: flex; background: var(--ground); border-radius: var(--radius-control); padding: 3px; gap: 2px; }
 .seg button { flex: 1; height: 38px; border-radius: var(--radius-control); color: var(--muted); font-weight: 500; }
 .seg button.on { background: var(--raised); color: var(--text); }
@@ -267,10 +267,10 @@ body.drawer #scrim, body.sheet #scrim { opacity: 1; pointer-events: auto; }
 #toast.on { opacity: 1; transform: translate(-50%, 0); }
 
 /* ---------- inspector: the pane right of the hinge when unfolded ---------- */
-#itabs { min-height: var(--top); display: flex; align-items: flex-end; gap: 20px; padding: 0 20px; border-bottom: 1px solid var(--border); flex: none; }
-#itabs button { height: 44px; color: var(--nav); font-weight: 500; position: relative; display: flex; align-items: center; gap: 6px; }
-#itabs button.on { color: var(--text); }
-#itabs button.on::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--text); }
+#itabs, #ptabs { min-height: var(--top); display: flex; align-items: flex-end; gap: 20px; padding: 0 20px; border-bottom: 1px solid var(--border); flex: none; }
+#itabs button, #ptabs button { height: 44px; color: var(--nav); font-weight: 500; position: relative; display: flex; align-items: center; gap: 6px; }
+#itabs button.on, #ptabs button.on { color: var(--text); }
+#itabs button.on::after, #ptabs button.on::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--text); }
 #itabs .count { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
 #itabs .count.need { color: var(--warning); }
 #ibody { flex: 1; overflow-y: auto; padding: 20px; }
@@ -352,3 +352,52 @@ body.tabletop .tool.waiting .ask { display: none; } /* the deck below the hinge 
 .balrow span { color: var(--muted); } .balrow b { font-weight: 500; font-variant-numeric: tabular-nums; }
 .balrow:active { background: var(--raised); } .balrow:empty { display: none; }
 #sheet .panel h3 { font: 500 13px/18px var(--font); color: var(--muted); margin: 0 0 10px; letter-spacing: 0; }
+
+/* ---------- agent setup page: plugins, skills, instruction files ---------- */
+#page { position: fixed; inset: 0; z-index: 25; background: var(--ground); display: flex; flex-direction: column; animation: pagein .2s cubic-bezier(.3,.7,.2,1); }
+@keyframes pagein { from { transform: translateX(24px); opacity: 0; } }
+body.sheet #scrim { z-index: 28; }
+.pagebar { min-height: var(--top); display: flex; align-items: center; gap: 4px; padding: 4px 6px; flex: none; }
+.ptitle { flex: 1; min-width: 0; padding: 0 4px; }
+#pageTitle { font: 600 16px/20px var(--font); }
+#ptabs { padding: 0 16px; }
+#pbody { flex: 1; overflow-y: auto; padding: 16px 16px 40px; }
+#pbody > * { max-width: 720px; margin-left: auto; margin-right: auto; }
+.lead { color: var(--muted); font-size: var(--fs-read); line-height: 22px; margin: 4px auto 20px; }
+.lead code, .ifile code { font-size: 13px; color: var(--text); }
+.ghead { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 4px 8px; }
+.ghead h3 { margin: 0; font: 500 14px/20px var(--font); color: var(--text); }
+.r2, .ghead .r2 { margin: 0; font-size: 12px; line-height: 16px; color: var(--faint); }
+.rows .row > .rx { flex: 1; min-width: 0; text-align: left; padding: 4px 0; display: flex; flex-direction: column; }
+.rows .rx .r1, .rows .rx .r2 { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rows.dim .rx { opacity: .55; }
+.rows .code, .kv b.code, .fpath.code { font-family: var(--code); font-size: 13px; }
+.tag { font-size: 12px; color: var(--warning); font-weight: 400; }
+.empty-note { background: var(--surface); border-radius: var(--radius-card); padding: 16px; color: var(--faint); }
+.sdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
+.sdot.up { background: var(--positive); } .sdot.down { background: var(--negative); } .sdot.off { background: var(--control); }
+.sdot.wait { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+.switch { width: 44px; height: 26px; border-radius: 13px; background: var(--raised); position: relative; flex: none; transition: background .15s; }
+.switch i { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--faint); transition: transform .15s, background .15s; }
+.switch.on { background: var(--text); } .switch.on i { transform: translateX(18px); background: var(--ground); }
+.switch:disabled { opacity: .4; }
+.switch::after { content: ""; position: absolute; inset: -9px -4px; }
+.ghost-danger { height: 44px; border-radius: var(--radius-control); color: var(--negative); font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 8px; }
+.ghost-danger:active { background: var(--pill-negative-bg); }
+.ifile .ihead2 { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.ifile h3 { color: var(--text); font: 600 16px/22px var(--font); margin: 0; }
+.ifile.missing h3 { color: var(--muted); }
+.fpath { color: var(--faint); margin: 8px 0 0; word-break: break-all; }
+.ipreview { max-height: 220px; overflow: hidden; margin-top: 12px; padding-top: 12px; box-shadow: inset 0 1px var(--rule); font-size: 14px; line-height: 22px; }
+.ipreview.all { max-height: none; }
+.ipreview pre { background: var(--ground); }
+.mdbox { background: var(--raised); border-radius: var(--radius-inner); padding: 14px; font-size: 14px; line-height: 22px; max-height: 46vh; overflow-y: auto; }
+.mdbox pre, .mdbox code { background: var(--surface); }
+textarea.editor, .field textarea { width: 100%; background: var(--ground); color: var(--text); border: 1px solid var(--control); border-radius: var(--radius-inner); padding: 12px 14px; outline: 0; resize: vertical; }
+textarea.editor { min-height: 46vh; font: 400 13px/20px var(--code); }
+.field textarea { font: 400 14px/21px var(--font); }
+textarea.editor:focus, .field textarea:focus { border-color: var(--text); }
+pre.sys { max-height: 64vh; }
+.agentrow { margin-top: 8px; }
+.agentrow > button > .rx { font-weight: 500; }
+.rows > button > span.sdot { flex: none; }

@@ -8,9 +8,11 @@ import crypto from 'node:crypto';
 import { loadConfig, saveConfig, readKey, writeKey, listSessions, createSession, deleteSession, HOME } from './store.mjs';
 import { runtime, dropRuntime, activeRuns } from './agent.mjs';
 import { DeepSeek } from './deepseek.mjs';
-import { Mcp } from './mcp.mjs';
+import { Mcp, loadMcpConfig, saveMcpConfig } from './mcp.mjs';
+import { listSkills, readSkill, setSkill, setClaudeSkills, createSkill, deleteSkill, instructionFiles, writeInstructions } from './skills.mjs';
+import { systemPrompt } from './agent.mjs';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 
 export function createServer({ config = loadConfig } = {}) {
   let cfg = config();
@@ -30,6 +32,38 @@ export function createServer({ config = loadConfig } = {}) {
     }],
     ['GET', /^\/api\/mcp$/, async () => { await mcp.schemas(); return mcp.status(); }],
     ['POST', /^\/api\/mcp\/reload$/, async () => { mcp.reload(); await mcp.schemas(); return mcp.status(); }],
+    // Plugin management: edits ~/.dsh/mcp.json, then reloads. Replies without waiting for connections.
+    ['PUT', /^\/api\/mcp\/([\w-]{1,40})$/, ([name], b) => {
+      if (name === 'reload') throw httpErr(400, 'That name is reserved');
+      const all = loadMcpConfig(), old = all[name] || {}, c = {};
+      if (b.url) {
+        if (!/^https?:\/\/\S+$/.test(String(b.url).trim())) throw httpErr(400, 'The URL must start with http:// or https://');
+        c.url = String(b.url).trim(); if (old.url && old.headers) c.headers = old.headers;
+      } else if (b.command) {
+        const parts = splitArgs(String(b.command)); c.command = parts[0]; c.args = parts.slice(1);
+        if (old.command && old.env) c.env = old.env; if (old.command && old.cwd) c.cwd = old.cwd;
+      } else throw httpErr(400, 'Give a URL or a command');
+      if (['read', 'edit', 'exec'].includes(b.risk)) c.risk = b.risk;
+      if (b.start) c.start = String(b.start).trim();
+      if (old.disabled) c.disabled = true;
+      all[name] = c; saveMcpConfig(all); mcp.reload(); return mcp.status();
+    }],
+    ['PATCH', /^\/api\/mcp\/([\w-]{1,40})$/, ([name], b) => {
+      const all = loadMcpConfig(); if (!all[name]) throw httpErr(404, 'No such server');
+      if (b.disabled) all[name].disabled = true; else delete all[name].disabled;
+      saveMcpConfig(all); mcp.reload(); return mcp.status();
+    }],
+    ['DELETE', /^\/api\/mcp\/([\w-]{1,40})$/, ([name]) => { const all = loadMcpConfig(); delete all[name]; saveMcpConfig(all); mcp.reload(); return mcp.status(); }],
+    ['GET', /^\/api\/mcp\/([\w-]{1,40})\/tools$/, async ([name]) => { await mcp.schemas(); return mcp.tools(name); }],
+    // Skills and instruction files, resolved against a working directory (default: the configured one).
+    ['GET', /^\/api\/skills$/, q => listSkills(cwdOf(q.query.get('cwd')))],
+    ['GET', /^\/api\/skills\/read$/, q => user(() => readSkill(cwdOf(q.query.get('cwd')), q.query.get('id')))],
+    ['POST', /^\/api\/skills$/, (_, b) => { const cwd = cwdOf(b.cwd); const id = user(() => createSkill(cwd, b)); return { id, ...listSkills(cwd) }; }],
+    ['PATCH', /^\/api\/skills$/, (_, b) => { if ('claude' in b) setClaudeSkills(b.claude); if (b.id) setSkill(String(b.id), !!b.enabled); return listSkills(cwdOf(b.cwd)); }],
+    ['POST', /^\/api\/skills\/delete$/, (_, b) => { const cwd = cwdOf(b.cwd); user(() => deleteSkill(cwd, String(b.id))); return listSkills(cwd); }],
+    ['GET', /^\/api\/instructions$/, q => instructionFiles(cwdOf(q.query.get('cwd')))],
+    ['PUT', /^\/api\/instructions$/, (_, b) => { const cwd = cwdOf(b.cwd); user(() => writeInstructions(cwd, String(b.key), b.content)); return instructionFiles(cwd); }],
+    ['GET', /^\/api\/system$/, q => { const id = q.query.get('session'); return { text: id ? systemPrompt(rt(id).s, mcp.prompt()) : systemPrompt({ cwd: cwdOf(q.query.get('cwd')) }, mcp.prompt()) }; }],
     ['GET', /^\/api\/models$/, () => api().models()],
     ['GET', /^\/api\/balance$/, () => api().balance()],
     ['GET', /^\/api\/sessions$/, () => listSessions().map(s => ({ ...s, running: activeRuns().includes(s.id) }))],
@@ -61,6 +95,8 @@ export function createServer({ config = loadConfig } = {}) {
     }],
   ];
 
+  const cwdOf = c => { const d = c ? path.resolve(expand(String(c))) : cfg.cwd; if (!isDir(d)) throw httpErr(400, 'Not a directory: ' + d); return d; };
+  const user = fn => { try { return fn(); } catch (e) { throw e.status ? e : httpErr(400, e.message); } };
   const rt = id => { const r = runtime(id, deps); if (!r) throw httpErr(404, 'No such session'); return r; };
   const api = () => { const k = readKey(); if (!k) throw httpErr(412, 'No API key set'); return new DeepSeek({ key: k, base: cfg.base }); };
 
@@ -122,3 +158,6 @@ const pick = (o, ks) => Object.fromEntries(ks.filter(k => o?.[k] !== undefined).
 const httpErr = (status, msg) => Object.assign(new Error(msg), { status });
 const expand = p => p.startsWith('~') ? path.join(process.env.HOME || '/', p.slice(1)) : p;
 const isDir = p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
+
+// "node server.mjs --flag 'a b'" -> ['node', 'server.mjs', '--flag', 'a b']
+function splitArgs(line) { return (line.match(/"[^"]*"|'[^']*'|\S+/g) || []).map(x => x.replace(/^(["'])(.*)\1$/, '$2')); }

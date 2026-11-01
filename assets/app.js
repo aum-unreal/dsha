@@ -19,13 +19,14 @@ const I = {
   arrow: svg('<path d="M5 12h14M13 6l6 6-6 6"/>'), activity: svg('<path d="M3 12h4l3-8 4 16 3-8h4"/>'), chart: svg('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'), fold: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>'),
   circle: svg('<circle cx="12" cy="12" r="7"/>'), half: svg('<circle cx="12" cy="12" r="7"/><path d="M12 5a7 7 0 0 1 0 14z" fill="currentColor"/>'),
   expand: svg('<path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/>'), shrink: svg('<path d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5"/>'),
+  book: svg('<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 21V5M8 7h7"/>'), back: svg('<path d="M15 6l-6 6 6 6"/>'),
   share: svg('<path d="M12 3v13M7 8l5-5 5 5"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/>'), trash: svg('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'), link: svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
 };
 const MARK = '<svg class="mark" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="6" fill="#fff" stroke="none"/><path d="M6.5 13c1.8-3.4 3.7-3.4 5.5 0s3.7 3.4 5.5 0" stroke="#000" stroke-width="2.2"/></svg>';
-const TOOL_NAME = { bash: 'Shell', read_file: 'Read file', write_file: 'Write file', edit_file: 'Edit file', list_dir: 'List folder', grep: 'Search', glob: 'Find files', web_fetch: 'Fetch', todo_write: 'Task list' };
+const TOOL_NAME = { bash: 'Shell', read_file: 'Read file', write_file: 'Write file', edit_file: 'Edit file', list_dir: 'List folder', grep: 'Search', glob: 'Find files', web_fetch: 'Fetch', todo_write: 'Task list', skill: 'Skill' };
 const tname = n => TOOL_NAME[n] || n.replace(/_/g, ' ');
 const TODO_ICON = { completed: I.check, in_progress: I.half, pending: I.circle };
-const TOOL_ICON = { bash: I.term, read_file: I.file, write_file: I.pen, edit_file: I.pen, list_dir: I.folder, grep: I.search, glob: I.search, web_fetch: I.globe, todo_write: I.list };
+const TOOL_ICON = { bash: I.term, read_file: I.file, write_file: I.pen, edit_file: I.pen, list_dir: I.folder, grep: I.search, glob: I.search, web_fetch: I.globe, todo_write: I.list, skill: I.book };
 const MODES = { ask: ['Ask', 'Asks before shell, edits and web fetches'], edits: ['Edits', 'File edits run freely; shell still asks'], auto: ['Auto', 'Everything runs without asking'] };
 
 /* ---------- transport ---------- */
@@ -38,7 +39,7 @@ window.native = {
   end(id, err) { const s = streams.get(id); streams.delete(id); s?.end(err); },
   paired(ok, err) { pairDone?.(ok, err); },
   shared(t) { sharedText(t); },
-  back() { if (document.body.classList.contains('sheet')) { closeSheet(); return true; } if (document.body.classList.contains('drawer')) { drawer(false); return true; } return false; },
+  back() { if (document.body.classList.contains('sheet')) { closeSheet(); return true; } if (document.body.classList.contains('paged')) { closePage(); return true; } if (document.body.classList.contains('drawer')) { drawer(false); return true; } return false; },
   resume() { if (S.cur) resync(); refreshSessions(); },
 };
 const local = { get: k => { try { return localStorage.getItem('dsha.' + k) || ''; } catch { return ''; } }, set: (k, v) => { try { localStorage.setItem('dsha.' + k, v); } catch {} } };
@@ -413,6 +414,7 @@ const COMMANDS = [
   ['/new', 'New session', () => newSession()], ['/compact', 'Summarise history to free context', () => compact()],
   ['/mode', 'Permission mode', () => modeSheet()], ['/model', 'Model and thinking', () => optionsSheet()],
   ['/cwd', 'Change working directory', () => pickDir(S.cur?.cwd, d => patch({ cwd: d }))], ['/settings', 'Connection, key, defaults', () => settingsSheet()],
+  ['/plugins', 'MCP tool servers', () => agentPage('plugins')], ['/skills', 'Skills dsh can load', () => agentPage('skills')], ['/instructions', 'DSH.md and other instruction files', () => agentPage('instructions')],
 ];
 function slash() {
   const v = input.value, box = $('#slash');
@@ -459,12 +461,185 @@ function sharedText(t) {
   input.value = (input.value ? input.value + '\n\n' : '') + t; grow(); syncSend(); input.focus(); toast('Shared text added to the message');
 }
 
+/* ---------- agent setup: plugins (MCP servers), skills, instruction files ---------- */
+// A full-screen page over the chat, since it is managed rather than glanced at. Everything is read
+// for the open session's folder (or the default folder), because skills and instruction files can
+// live in the project as well as in ~/.dsh.
+const PTABS = [['plugins', 'Plugins'], ['skills', 'Skills'], ['instructions', 'Instructions']];
+const RISK = { read: 'Read only', edit: 'Edits files', exec: 'Runs anything' };
+const SOURCES = { project: ['This project', '.dsh/skills in the session folder'], dsh: ['All projects', '~/.dsh/skills'], claude: ['Claude Code', '~/.claude/skills'] };
+const pageCwd = () => S.cur?.cwd || S.cfg?.cwd || home();
+const cwdQ = () => 'cwd=' + encodeURIComponent(pageCwd());
+const sw = (on, attrs) => `<button class="switch${on ? ' on' : ''}" role="switch" aria-checked="${on}" ${attrs}><i></i></button>`;
+const kb = n => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
+
+function agentPage(tab = S.ptab || 'plugins') {
+  S.ptab = tab; drawer(false); closeSheet();
+  const page = $('#page'); page.hidden = false; document.body.classList.add('paged');
+  $('#pageSub').textContent = 'For ' + short(pageCwd());
+  $('#ptabs').innerHTML = PTABS.map(([k, l]) => `<button role="tab" data-t="${k}" class="${k === tab ? 'on' : ''}" aria-selected="${k === tab}">${l}</button>`).join('');
+  $('#ptabs').querySelectorAll('button').forEach(b => b.onclick = () => { haptic(); agentPage(b.dataset.t); });
+  $('#pbody').scrollTop = 0;
+  ({ plugins: pluginsTab, skills: skillsTab, instructions: instructionsTab })[tab]();
+}
+function closePage() { $('#page').hidden = true; document.body.classList.remove('paged'); }
+const pbody = html => { if (html != null) $('#pbody').innerHTML = html; return $('#pbody'); };
+const pageOn = t => !$('#page').hidden && S.ptab === t;
+
+/* plugins */
+const mcpState = m => m.state === 'up' ? ['up', `Connected · ${m.tools} tool${m.tools === 1 ? '' : 's'}`] : m.state === 'off' ? ['off', 'Off'] : m.state === 'down' ? ['down', `Can't connect: ${m.error || 'no reply'}`] : ['wait', 'Connecting…'];
+function pluginsTab() {
+  pbody(`<p class="lead">Tool servers (MCP) that dsh connects to. Their tools sit next to the built-in ones and ask for approval the same way. Saved in <code>~/.dsh/mcp.json</code>.</p><div id="mcpList">${S.mcp ? '' : '<p class="hint">Checking servers…</p>'}</div>
+    <div class="rowbtns"><button class="secondary" id="mcpReload">${I.retry}Reconnect all</button><button class="primary" id="mcpAdd">${I.plus}Add server</button></div>`);
+  if (S.mcp) drawPlugins();
+  $('#mcpAdd').onclick = () => pluginForm();
+  $('#mcpReload').onclick = async () => { haptic(); $('#mcpList').innerHTML = '<p class="hint">Reconnecting…</p>'; try { S.mcp = await api('POST', '/api/mcp/reload'); } catch (e) { toast(e.message); } if (pageOn('plugins')) drawPlugins(); };
+  api('GET', '/api/mcp').then(r => { S.mcp = r; if (pageOn('plugins')) drawPlugins(); }).catch(e => { if (pageOn('plugins')) $('#mcpList').innerHTML = `<p class="err-text">${esc(e.message)}</p>`; });
+}
+function drawPlugins() {
+  const box = $('#mcpList'); if (!box) return;
+  if (!S.mcp.length) { box.innerHTML = '<div class="empty-note">No servers yet. Add one by URL (a server already running) or by the command that starts it.</div>'; return; }
+  box.innerHTML = `<div class="rows">${S.mcp.map((m, i) => { const [k, t] = mcpState(m); return `<button data-i="${i}"><span class="sdot ${k}"></span><span class="rx"><span class="r1">${esc(m.name)}</span><span class="r2">${esc(t)}</span></span>${I.chev}</button>`; }).join('')}</div>`;
+  box.querySelectorAll('[data-i]').forEach(b => b.onclick = () => pluginSheet(S.mcp[+b.dataset.i]));
+}
+async function pluginSheet(m) {
+  const [, st] = mcpState(m);
+  const b = sheet(`<h3>${esc(m.name)}</h3><div class="kvs"><div class="kv"><span>Status</span><b>${esc(st)}</b></div><div class="kv"><span>${m.transport === 'http' ? 'URL' : 'Command'}</span><b class="code">${esc(m.target)}</b></div>${m.start ? `<div class="kv"><span>Start with</span><b class="code">${esc(m.start)}</b></div>` : ''}<div class="kv"><span>Tools without hints</span><b>${RISK[m.risk]}</b></div>${m.server ? `<div class="kv"><span>Server</span><b>${esc(m.server.name || '')} ${esc(m.server.version || '')}</b></div>` : ''}${m.env.length ? `<div class="kv"><span>Environment</span><b class="code">${esc(m.env.join(', '))}</b></div>` : ''}</div>
+    <h4>Tools</h4><div id="mcpTools"><p class="hint">${m.state === 'up' ? 'Loading…' : 'Shown once the server is connected.'}</p></div>
+    <div class="rowbtns"><button class="secondary" data-a="toggle">${m.disabled ? 'Turn on' : 'Turn off'}</button><button class="secondary" data-a="edit">${I.pen}Edit</button></div>
+    <button class="ghost-danger wide" data-a="del">${I.trash}Remove server</button>`, {
+    toggle: async () => { closeSheet(); try { S.mcp = await api('PATCH', '/api/mcp/' + m.name, { disabled: !m.disabled }); toast(m.disabled ? `${m.name} turned on` : `${m.name} turned off`); } catch (e) { toast(e.message); } pluginsTab(); },
+    edit: () => pluginForm(m),
+    del: async () => { if (!confirm(`Remove ${m.name}? Its tools stop being available to dsh.`)) return; closeSheet(); try { S.mcp = await api('DELETE', '/api/mcp/' + m.name); toast('Removed'); } catch (e) { toast(e.message); } pluginsTab(); },
+  });
+  if (m.state !== 'up') return;
+  try {
+    const tools = await api('GET', `/api/mcp/${m.name}/tools`), box = b.querySelector('#mcpTools'); if (!box) return;
+    box.innerHTML = tools.length ? `<div class="rows">${tools.map(t => `<div class="row"><span class="rx"><span class="r1 code">${esc(t.name)}</span><span class="r2">${esc(t.description.split('\n')[0] || 'No description')}</span></span>${t.readOnly ? '<span class="rv">Read only</span>' : ''}</div>`).join('')}</div>` : '<p class="hint">This server offers no tools.</p>';
+  } catch {}
+}
+function pluginForm(m) {
+  let kind = m ? m.transport : 'http', risk = m?.risk || 'exec';
+  const b = sheet(`<h3>${m ? 'Edit ' + esc(m.name) : 'Add server'}</h3>
+    <label class="field"><span>Name</span><input id="mName" value="${esc(m?.name || '')}" ${m ? 'disabled' : ''} placeholder="files" autocapitalize="off" spellcheck="false"></label>
+    ${seg('kind', [['http', 'By URL'], ['stdio', 'By command']], kind)}
+    <label class="field" style="margin-top:14px" id="mUrlF"><span>URL</span><input id="mUrl" value="${esc(m?.transport === 'http' ? m.target : '')}" placeholder="http://127.0.0.1:9090/mcp" autocapitalize="off" spellcheck="false" inputmode="url"></label>
+    <label class="field" style="margin-top:14px" id="mCmdF"><span>Command</span><input id="mCmd" value="${esc(m?.transport === 'stdio' ? m.target : '')}" placeholder="npx -y @modelcontextprotocol/server-filesystem ~" autocapitalize="off" spellcheck="false"></label>
+    <label class="field"><span>Start command, optional</span><input id="mStart" value="${esc(m?.start || '')}" placeholder="Runs once when the server can't be reached" autocapitalize="off" spellcheck="false"></label>
+    <h4>Tools without a read-only or destructive hint</h4>${seg('risk', Object.entries(RISK), risk)}
+    <p class="hint">Read only tools run without asking. Others follow the session's permission mode.</p>
+    <button class="primary wide" data-a="save" style="margin-top:18px">Save</button><div class="err-text" id="mErr"></div>`, {
+    kind: el => { kind = el.dataset.v; mark(el); show(); },
+    risk: el => { risk = el.dataset.v; mark(el); },
+    save: async el => {
+      const name = (m?.name || $('#mName').value).trim(), body = { risk, start: $('#mStart').value.trim() };
+      if (kind === 'http') body.url = $('#mUrl').value.trim(); else body.command = $('#mCmd').value.trim();
+      if (!/^[\w-]{1,40}$/.test(name)) return ($('#mErr').textContent = 'Name: letters, digits, dashes or underscores.');
+      el.disabled = true;
+      try { S.mcp = await api('PUT', '/api/mcp/' + name, body); closeSheet(); toast(m ? 'Saved' : `${name} added`); pluginsTab(); }
+      catch (e) { $('#mErr').textContent = e.message; el.disabled = false; }
+    },
+  });
+  const mark = el => el.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === el));
+  const show = () => { b.querySelector('#mUrlF').hidden = kind !== 'http'; b.querySelector('#mCmdF').hidden = kind === 'http'; };
+  show();
+}
+
+/* skills */
+async function skillsTab() {
+  pbody('<p class="hint">Loading skills…</p>');
+  try { S.skills = await api('GET', '/api/skills?' + cwdQ()); } catch (e) { return pbody(`<p class="err-text">${esc(e.message)}</p>`); }
+  if (pageOn('skills')) drawSkills();
+}
+function drawSkills() {
+  const { skills, claude } = S.skills;
+  const group = src => {
+    const list = skills.filter(x => x.source === src), [title, where] = SOURCES[src];
+    const head = src === 'claude' ? `<div class="ghead"><div><h3>${title}</h3><p class="r2">${where}</p></div>${sw(claude, 'data-claude aria-label="Use Claude Code skills"')}</div>` : `<div class="ghead"><div><h3>${title}</h3><p class="r2">${where}</p></div></div>`;
+    if (!list.length) return src === 'claude' ? '' : head + `<div class="empty-note">None yet.</div>`;
+    return head + `<div class="rows${src === 'claude' && !claude ? ' dim' : ''}">${list.map(x => `<div class="row"><button class="rx" data-open="${esc(x.id)}"><span class="r1">${esc(x.name)}${x.shadowed ? ' <span class="tag">Hidden by a project skill</span>' : ''}</span><span class="r2">${esc(x.description || 'No description')}</span></button>${sw(x.enabled, `data-id="${esc(x.id)}" aria-label="Use ${esc(x.name)}"` + (src === 'claude' && !claude ? ' disabled' : ''))}</div>`).join('')}</div>`;
+  };
+  const on = skills.filter(x => x.enabled && !x.shadowed).length;
+  pbody(`<p class="lead">Instructions for a kind of task. dsh sees each skill's name and description, and loads the full instructions when a task matches. ${on} in use.</p>
+    <div class="group">${group('project')}</div><div class="group">${group('dsh')}</div>${skills.some(x => x.source === 'claude') ? `<div class="group">${group('claude')}</div>` : ''}
+    <div class="rowbtns"><button class="primary" id="skNew">${I.plus}New skill</button></div>`);
+  const box = pbody();
+  box.querySelectorAll('[data-open]').forEach(b => b.onclick = () => skillSheet(b.dataset.open));
+  box.querySelectorAll('.switch[data-id]').forEach(b => b.onclick = async () => { haptic(); try { S.skills = await api('PATCH', '/api/skills', { cwd: pageCwd(), id: b.dataset.id, enabled: !b.classList.contains('on') }); drawSkills(); } catch (e) { toast(e.message); } });
+  box.querySelector('[data-claude]')?.addEventListener('click', async () => { haptic(); try { S.skills = await api('PATCH', '/api/skills', { cwd: pageCwd(), claude: !claude }); drawSkills(); } catch (e) { toast(e.message); } });
+  $('#skNew').onclick = skillForm;
+}
+async function skillSheet(id) {
+  let s; try { s = await api('GET', `/api/skills/read?${cwdQ()}&id=${encodeURIComponent(id)}`); } catch (e) { return toast(e.message); }
+  const body = s.content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
+  const b = sheet(`<h3>${esc(s.name)}</h3><p class="hint" style="margin:-8px 0 12px">${esc(SOURCES[s.source][0])} · <code>${esc(short(s.file))}</code></p>
+    ${s.description ? `<div class="kvs"><div class="kv"><span>Used when</span><b style="text-align:left">${esc(s.description)}</b></div></div>` : ''}
+    <h4>Instructions</h4><div class="mdbox md" id="skBody"></div>
+    <div class="rowbtns"><button class="secondary" data-a="toggle">${s.enabled ? 'Turn off' : 'Turn on'}</button>${s.source !== 'claude' ? `<button class="ghost-danger" data-a="del">${I.trash}Delete</button>` : ''}</div>`, {
+    toggle: async () => { closeSheet(); try { S.skills = await api('PATCH', '/api/skills', { cwd: pageCwd(), id, enabled: !s.enabled }); drawSkills(); } catch (e) { toast(e.message); } },
+    del: async () => { if (!confirm(`Delete the skill ${s.name}? This removes its folder.`)) return; closeSheet(); try { S.skills = await api('POST', '/api/skills/delete', { cwd: pageCwd(), id }); drawSkills(); toast('Deleted'); } catch (e) { toast(e.message); } },
+  });
+  renderMd(b.querySelector('#skBody'), body);
+}
+function skillForm() {
+  let scope = 'dsh';
+  sheet(`<h3>New skill</h3>
+    <label class="field"><span>Name</span><input id="skName" placeholder="release-apk" autocapitalize="off" spellcheck="false"></label>
+    <label class="field"><span>Use it when</span><input id="skDesc" placeholder="Building and shipping a new APK version"></label>
+    <h4>Available in</h4>${seg('scope', [['dsh', 'All projects'], ['project', 'This project']], scope)}
+    <label class="field" style="margin-top:16px"><span>Instructions</span><textarea id="skText" rows="9" placeholder="Steps, commands and rules dsh should follow. Markdown works."></textarea></label>
+    <button class="primary wide" data-a="save">Create skill</button><div class="err-text" id="skErr"></div>`, {
+    scope: el => { scope = el.dataset.v; el.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === el)); },
+    save: async el => {
+      el.disabled = true;
+      try { S.skills = await api('POST', '/api/skills', { cwd: pageCwd(), scope, name: $('#skName').value, description: $('#skDesc').value, body: $('#skText').value }); closeSheet(); drawSkills(); toast('Skill created'); }
+      catch (e) { $('#skErr').textContent = e.message; el.disabled = false; }
+    },
+  });
+}
+
+/* instruction files */
+async function instructionsTab() {
+  pbody('<p class="hint">Loading…</p>');
+  let files; try { files = await api('GET', '/api/instructions?' + cwdQ()); } catch (e) { return pbody(`<p class="err-text">${esc(e.message)}</p>`); }
+  if (!pageOn('instructions')) return;
+  const label = { global: 'Every session', 'DSH.md': 'This project', 'AGENTS.md': 'This project, shared with other agents', 'CLAUDE.md': 'This project, Claude Code' };
+  pbody(`<p class="lead">DeepSeek has no instructions file of its own, so dsh uses <b>DSH.md</b>: one in <code>~/.dsh</code> for every session, and one in each project. It also reads <b>AGENTS.md</b> and <b>CLAUDE.md</b>, the files other agents use, from the session's folder.</p>
+    ${files.map((f, i) => `<div class="panel ifile${f.exists ? '' : ' missing'}"><div class="ihead2"><div><h3>${esc(f.name)}</h3><p class="r2">${esc(label[f.key])}</p></div><span class="pill">${f.exists ? 'Loaded · ' + kb(f.size) : 'Not created'}</span></div>
+      <p class="fpath code">${esc(short(f.path))}</p>
+      ${f.exists ? `<div class="md ipreview" data-p="${i}"></div>` : ''}
+      <div class="rowbtns">${f.exists ? `<button class="secondary" data-more="${i}">Show all</button>` : ''}${f.editable ? `<button class="${f.exists ? 'secondary' : 'primary'}" data-edit="${i}">${f.exists ? I.pen + 'Edit' : I.plus + 'Create'}</button>` : '<span class="hint" style="margin:auto 0">Read only here: Claude Code owns it</span>'}</div></div>`).join('')}
+    <button class="secondary wide" id="sysBtn">${I.file}Full system prompt</button>`);
+  const box = pbody();
+  box.querySelectorAll('[data-p]').forEach(el => renderMd(el, files[+el.dataset.p].content));
+  box.querySelectorAll('[data-more]').forEach(b => b.onclick = () => { const p = box.querySelector(`[data-p="${b.dataset.more}"]`); p.classList.toggle('all'); b.textContent = p.classList.contains('all') ? 'Show less' : 'Show all'; });
+  box.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => instructionEditor(files[+b.dataset.edit]));
+  $('#sysBtn').onclick = async () => {
+    try { const r = await api('GET', '/api/system?' + (S.cur ? 'session=' + S.cur.id : cwdQ())); sheet(`<h3>System prompt</h3><p class="hint" style="margin:-8px 0 12px">What dsh sends ahead of the conversation, built fresh each step. ${kb(r.text.length)}.</p><pre class="ipre sys">${esc(r.text)}</pre>`); }
+    catch (e) { toast(e.message); }
+  };
+}
+function instructionEditor(f) {
+  sheet(`<h3>${f.exists ? 'Edit' : 'Create'} ${esc(f.name)}</h3><p class="hint" style="margin:-8px 0 12px"><code>${esc(short(f.path))}</code></p>
+    <textarea id="insText" class="editor" spellcheck="false" placeholder="${f.key === 'global' ? 'How you like dsh to work, in every project: tone, tools to prefer, things never to do.' : 'How to build, test and ship this project, and its conventions.'}">${esc(f.content)}</textarea>
+    <div class="rowbtns"><button class="secondary" data-a="cancel">Cancel</button><button class="primary" data-a="save">Save</button></div><div class="err-text" id="insErr"></div>`, {
+    cancel: closeSheet,
+    save: async el => {
+      el.disabled = true;
+      try { await api('PUT', '/api/instructions', { cwd: pageCwd(), key: f.key, content: $('#insText').value }); closeSheet(); toast(`${f.name} saved; dsh reads it from the next step`); instructionsTab(); }
+      catch (e) { $('#insErr').textContent = e.message; el.disabled = false; }
+    },
+  });
+}
+
 /* ---------- drawer & sheets ---------- */
 function drawer(on) { document.body.classList.toggle('drawer', on); $('#drawer').ariaHidden = !on; if (on) { refreshSessions(); refreshBalance(); } }
 document.querySelector('.brand').innerHTML = MARK + '<span>DSHA</span>';
 $('#menuBtn').innerHTML = I.menu; $('#menuBtn').onclick = () => { haptic(); drawer(true); };
 $('#moreBtn').innerHTML = I.more; $('#moreBtn').onclick = () => { haptic(); optionsSheet(); };
 $('#fsBtn').onclick = () => { haptic(); setChatFull(!chatFull); };
+$('#agentBtn').innerHTML = `${I.book}<span class="rx"><span class="r1">Plugins, skills and instructions</span></span>${I.chev}`; $('#agentBtn').onclick = () => agentPage();
+$('#pageBack').innerHTML = I.back; $('#pageBack').onclick = closePage;
 $('#settingsBtn').innerHTML = I.gear; $('#settingsBtn').onclick = () => { drawer(false); settingsSheet(); };
 $('#newBtn').innerHTML = I.plus + 'New session'; $('#newBtn').onclick = () => { drawer(false); newSession(); };
 $('#scrim').onclick = () => { drawer(false); closeSheet(); };
@@ -570,7 +745,7 @@ async function settingsSheet() {
     <h4>Defaults for new sessions</h4>
     <div class="rows"><button data-a="defs">${I.gear}<span>${esc(S.cfg ? `${modelName(S.cfg.model)} · ${S.cfg.thinking === false ? 'no thinking' : S.cfg.effort + ' thinking'} · ${MODES[S.cfg.mode]?.[0] || S.cfg.mode}` : 'Unknown')}</span></button><button data-a="dcwd">${I.folder}<span>${esc(short(S.cfg?.cwd || ''))}</span></button></div>
     ${N ? `<h4>Notifications</h4><button class="secondary wide" data-a="notif">Allow notifications</button><p class="hint">Get notified when a run finishes or needs approval while DSHA is in the background.</p>` : ''}
-    <h4>About</h4><div class="kvs"><div class="kv"><span>DSHA</span><b>${esc(c.version)}</b></div><div class="kv"><span>dsh</span><b>${esc(S.health?.version || 'Not connected')}</b></div></div><div class="rows" style="margin-top:10px"><button data-a="lic">${I.file}<span>Third-party licences</span></button></div>`, {
+    <h4>About</h4><div class="kvs"><div class="kv"><span>DSHA</span><b>${esc(c.version)}</b></div><div class="kv"><span>dsh</span><b>${esc(S.health?.version || 'Not connected')}</b></div></div><div class="rows" style="margin-top:10px"><button data-a="agent">${I.book}<span>Plugins, skills and instructions</span></button><button data-a="lic">${I.file}<span>Third-party licences</span></button></div>`, {
     theme: el => { local.set('theme', el.dataset.v); applyTheme(); b.querySelectorAll('[data-a=theme]').forEach(x => x.classList.toggle('on', x === el)); },
     pair: el => { el.disabled = true; $('#pairErr').textContent = ''; pairTermux((ok, err) => { el.disabled = false; if (ok) { toast('Paired'); closeSheet(); boot(); } else $('#pairErr').textContent = err; }); },
     save: () => { saveSettings($('#fUrl').value.trim().replace(/\/+$/, ''), $('#fTok').value.trim()); closeSheet(); boot(); },
@@ -578,6 +753,7 @@ async function settingsSheet() {
     defs: () => { const s = S.cur; S.cur = null; optionsSheet().finally(() => { S.cur = s; }); },
     dcwd: () => pickDir(S.cfg?.cwd, async d => { S.cfg = await api('PUT', '/api/config', { cwd: d }); toast('Default folder set'); }),
     notif: () => N.askNotifications(),
+    agent: () => agentPage(),
     lic: async () => { const t = await fetch('vendor/LICENSES.txt').then(r => r.text()); sheet(`<h3>Licences</h3><pre style="white-space:pre-wrap;font-size:11px;color:var(--muted)">${esc(t)}</pre>`); },
   });
   refreshBalance(true);

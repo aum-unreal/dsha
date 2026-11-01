@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { loadSkill } from './skills.mjs';
 
 const MAX_OUT = 30000;
 const PREFIX = process.env.PREFIX || '/usr';
@@ -144,6 +145,12 @@ export const TOOLS = {
     parameters: { type: 'object', properties: { todos: { type: 'array', items: { type: 'object', properties: { content: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] } }, required: ['content', 'status'] } } }, required: ['todos'] },
     async run(a, ctx) { ctx.session.todos = a.todos; return 'Todo list updated.'; },
   },
+  skill: {
+    risk: 'read',
+    description: 'Load a skill: the full instructions for a kind of task, listed under "Skills" in the system prompt. Load the matching skill before starting such a task, then follow it.',
+    parameters: { type: 'object', properties: { name: { type: 'string', description: 'Skill name as listed' } }, required: ['name'] },
+    async run(a, ctx) { return loadSkill(ctx.cwd, String(a.name || '')); },
+  },
 };
 
 export function htmlText(h) {
@@ -166,6 +173,7 @@ export function summarize(name, a = {}) {
     case 'glob': return a.pattern;
     case 'web_fetch': return a.url;
     case 'todo_write': return `${(a.todos || []).length} items`;
+    case 'skill': return a.name;
     default: return JSON.stringify(a).slice(0, 200);
   }
 }

@@ -20,6 +20,13 @@ const NAME_RE = /[^a-zA-Z0-9_-]/g;
 export function loadMcpConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')).mcpServers || {}; } catch { return {}; }
 }
+// Rewrite mcp.json's server map, keeping any other top-level keys the user put there.
+export function saveMcpConfig(servers) {
+  let doc = {}; try { doc = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch {}
+  doc.mcpServers = servers;
+  fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
+  const tmp = CONFIG_FILE + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(doc, null, 2) + '\n', { mode: 0o600 }); fs.renameSync(tmp, CONFIG_FILE);
+}
 
 class Server {
   constructor(name, cfg) {
@@ -174,7 +181,8 @@ export class Mcp {
   constructor(cfg) { this.load(cfg); }
   load(cfg = loadMcpConfig()) {
     for (const s of this.servers || []) s.close();
-    this.servers = Object.entries(cfg).map(([name, c]) => c.url ? new Http(name, c) : new Stdio(name, c));
+    this.cfg = cfg;
+    this.servers = Object.entries(cfg).filter(([, c]) => !c.disabled).map(([name, c]) => c.url ? new Http(name, c) : new Stdio(name, c));
     this.map = new Map();
   }
   reload() { this.load(); }
@@ -211,8 +219,17 @@ export class Mcp {
     if (!up.length) return '';
     return up.map(s => `- ${s.name}${s.info?.name ? ` (${s.info.name} ${s.info.version || ''})` : ''}: ${s.tools.length} tools${s.instructions ? '\n' + clip(s.instructions, 6000) : ''}`).join('\n');
   }
+  // One row per configured server, disabled ones included. Env values and headers stay on the box.
   status() {
-    return this.servers.map(s => ({ name: s.name, transport: s.cfg.url ? 'http' : 'stdio', state: s.state, error: s.error || undefined, tools: s.tools.length, server: s.info || undefined }));
+    return Object.entries(this.cfg || {}).map(([name, c]) => {
+      const s = this.servers.find(x => x.name === name);
+      return { name, transport: c.url ? 'http' : 'stdio', target: c.url || [c.command, ...(c.args || [])].join(' '), risk: ['read', 'edit', 'exec'].includes(c.risk) ? c.risk : 'exec', start: c.start || undefined, env: Object.keys(c.env || {}), disabled: !!c.disabled,
+        state: c.disabled ? 'off' : s?.state || 'idle', error: s?.error || undefined, tools: s?.tools.length || 0, server: s?.info || undefined };
+    });
+  }
+  tools(name) {
+    const s = this.servers.find(x => x.name === name);
+    return (s?.tools || []).map(t => ({ name: t.name, description: t.description || '', readOnly: !!t.annotations?.readOnlyHint }));
   }
   close() { for (const s of this.servers) s.close(); }
 }

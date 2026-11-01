@@ -51,7 +51,7 @@ const stat = http.createServer((req, res) => {
 (async () => {
   await new Promise(r => mock.listen(MOCK, '127.0.0.1', r));
   await new Promise(r => stat.listen(STATIC, '127.0.0.1', r));
-  const dsh = spawn(process.execPath, [path.resolve(__dirname, '../server/dsh.mjs'), 'serve'], { env: { ...process.env, DSH_HOME: path.join(tmp, 'home'), DSH_KEY_FILE: path.join(tmp, 'key') }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const dsh = spawn(process.execPath, [path.resolve(__dirname, '../server/dsh.mjs'), 'serve'], { env: { ...process.env, HOME: tmp, DSH_HOME: path.join(tmp, 'home'), DSH_KEY_FILE: path.join(tmp, 'key') }, stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise(r => dsh.stdout.once('data', r));
   const browser = await chromium.launch({ ...launch(), headless: true });
   const ctx = await browser.newContext({ viewport: { width: 412, height: 860 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
@@ -226,6 +226,49 @@ const stat = http.createServer((req, res) => {
     await page.locator('#sheet .kpi', { hasText: 'Balance' }).filter({ hasText: '5.73 USD' }).waitFor();
     await page.waitForTimeout(250); await page.screenshot({ path: shot('usage') });
     await page.locator('#scrim').click({ position: { x: 180, y: 20 } }); await page.waitForTimeout(250);
+
+    // Agent setup page: plugins, skills, instruction files.
+    await page.getByRole('button', { name: 'Sessions' }).click(); await page.waitForTimeout(250);
+    await page.locator('#agentBtn').click();
+    await page.locator('#page .empty-note', { hasText: 'No servers yet' }).waitFor();
+    await page.getByRole('button', { name: 'Add server' }).click();
+    await page.locator('#mName').fill('web'); await page.locator('#mUrl').fill('http://127.0.0.1:1/mcp');
+    await page.locator('#sheet [data-a=save]').click();
+    await page.locator('#mcpList .r2', { hasText: "Can't connect" }).waitFor({ timeout: 20000 });
+    await page.locator('#mcpList button', { hasText: 'web' }).click();
+    await page.getByRole('button', { name: 'Turn off' }).click();
+    await page.locator('#mcpList .r2', { hasText: 'Off' }).waitFor();
+    await page.waitForTimeout(250); await page.screenshot({ path: shot('agent-plugins') });
+
+    await page.locator('#ptabs [data-t=skills]').click();
+    await page.getByRole('button', { name: 'New skill' }).click();
+    await page.locator('#skName').fill('release-apk'); await page.locator('#skDesc').fill('Building and shipping a new APK version');
+    await page.locator('#skText').fill('1. Bump the version.\n2. Run `./build.sh`.');
+    await page.locator('#sheet [data-a=save]').click();
+    const skSwitch = page.getByRole('switch', { name: 'Use release-apk' });
+    assert.equal(await skSwitch.getAttribute('aria-checked'), 'true');
+    await page.waitForTimeout(250); await page.screenshot({ path: shot('agent-skills') });
+    await skSwitch.click(); await page.waitForTimeout(250);
+    assert.equal(await page.getByRole('switch', { name: 'Use release-apk' }).getAttribute('aria-checked'), 'false');
+    await page.getByRole('switch', { name: 'Use release-apk' }).click(); await page.waitForTimeout(200);
+    await page.locator('[data-open="dsh:release-apk"]').click();
+    await page.locator('#skBody li', { hasText: 'Bump the version' }).waitFor();
+    await page.locator('#scrim').click({ position: { x: 180, y: 20 } }); await page.waitForTimeout(250);
+
+    await page.locator('#ptabs [data-t=instructions]').click();
+    await page.locator('.ifile h3', { hasText: 'CLAUDE.md' }).waitFor();
+    assert.equal(await page.locator('.ifile').count(), 4);
+    await page.locator('[data-edit="0"]').click();
+    await page.locator('#insText').fill('Answer in British English.');
+    await page.locator('#sheet [data-a=save]').click();
+    await page.locator('.ifile').first().locator('.pill', { hasText: 'Loaded' }).waitFor();
+    await page.waitForTimeout(250); await page.screenshot({ path: shot('agent-instructions') });
+    await page.locator('#sysBtn').click();
+    await page.locator('#sheet pre.sys', { hasText: 'Answer in British English.' }).waitFor();
+    assert.match(await page.locator('#sheet pre.sys').textContent(), /- release-apk: Building and shipping a new APK version/);
+    await page.locator('#scrim').click({ position: { x: 180, y: 20 } }); await page.waitForTimeout(250);
+    await page.getByRole('button', { name: 'Back' }).click();
+    assert.equal(await page.locator('#page').isVisible(), false);
     assert.deepEqual(errors, []);
     console.log('ui ok');
   } finally {

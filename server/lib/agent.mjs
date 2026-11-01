@@ -7,6 +7,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { DeepSeek, cost } from './deepseek.mjs';
 import { TOOLS, schemas, summarize, clip } from './tools.mjs';
+import { contextFiles, skillPrompt } from './skills.mjs';
 import { saveSession, loadSession, readKey } from './store.mjs';
 
 const runtimes = new Map();
@@ -21,17 +22,8 @@ export function runtime(id, deps) {
 export const dropRuntime = id => { runtimes.get(id)?.stop(); runtimes.delete(id); };
 export const activeRuns = () => [...runtimes.values()].filter(r => r.running).map(r => r.s.id);
 
-function contextFiles(cwd) {
-  const out = [];
-  for (const n of ['DSH.md', 'AGENTS.md', 'CLAUDE.md']) {
-    const f = path.join(cwd, n);
-    try { const t = fs.readFileSync(f, 'utf8'); out.push(`<file path="${f}">\n${clip(t, 20000)}\n</file>`); } catch {}
-  }
-  return out.join('\n');
-}
-
 export function systemPrompt(s, mcp = '') {
-  const files = contextFiles(s.cwd);
+  const files = contextFiles(s.cwd), skills = skillPrompt(s.cwd);
   return `You are dsh, a coding and operations agent running on the user's own machine (${os.platform()} ${os.arch()}${process.env.PREFIX ? ', Termux on Android' : ''}) and talking to them through the DSHA phone app.
 Working directory: ${s.cwd}
 Date: ${new Date().toISOString().slice(0, 10)}
@@ -43,7 +35,7 @@ How to work:
 - For multi-step tasks keep a todo list with todo_write.
 - Tool calls may be denied by the user; if so, don't retry the same call — adjust or ask.
 - Don't run destructive commands (rm -rf, force-push, wiping data) unless the user clearly asked.
-- Report outcomes faithfully: if a command failed, say so.${mcp ? '\n\nExternal tool servers (MCP) connected; their tools sit next to the built-ins and follow the same approval rules:\n' + mcp : ''}${files ? '\n\nProject instructions found in the working directory:\n' + files : ''}`;
+- Report outcomes faithfully: if a command failed, say so.${mcp ? '\n\nExternal tool servers (MCP) connected; their tools sit next to the built-ins and follow the same approval rules:\n' + mcp : ''}${skills ? '\n\nSkills: load one with the skill tool before a task it covers.\n' + skills : ''}${files ? '\n\nInstructions from the user (global DSH.md) and the working directory (DSH.md, AGENTS.md, CLAUDE.md):\n' + files : ''}`;
 }
 
 export class Runtime {
