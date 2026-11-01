@@ -14,7 +14,7 @@ import { systemPrompt } from './agent.mjs';
 import { listAgents, readAgent, saveAgent, setAgent, setClaudeAgents, deleteAgent } from './agents.mjs';
 import { TOOLS } from './tools.mjs';
 
-export const VERSION = '0.6.0';
+export const VERSION = '0.6.1';
 
 export function createServer({ config = loadConfig } = {}) {
   let cfg = config();

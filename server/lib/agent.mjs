@@ -12,7 +12,7 @@ import { agentPrompt, resolveAgent } from './agents.mjs';
 import { saveSession, loadSession, readKey } from './store.mjs';
 
 const runtimes = new Map();
-const MAX_EVENTS = 20000;
+const MAX_EVENTS = +process.env.DSH_MAX_EVENTS || 20000;
 const COMPACT_AT = 700_000; // prompt tokens; models have a 1M window
 // A model call that fails before anything streams is retried after these waits (ms) when the failure is
 // transient (rate limit, 5xx, no connection). DSH_RETRY_WAITS overrides them, for tests.
@@ -58,7 +58,11 @@ export class Runtime {
   emit(type, data = {}) {
     const ev = { seq: ++this.seq, t: Date.now(), type, ...data };
     this.events.push(ev);
-    if (this.events.length > MAX_EVENTS) this.events.splice(0, this.events.length - MAX_EVENTS);
+    // Trim only finished runs, which a reconnecting client rebuilds from the snapshot. The live run
+    // stays whole however long it streams (every token is an event), or an app reopened mid-run
+    // would replay only its tail: the prompt, the first steps and the start of the reply gone.
+    const over = this.events.length - MAX_EVENTS;
+    if (over > 0) { let n = 0; while (n < over && !(this.running && this.events[n].seq >= this.runSeq)) n++; if (n) this.events.splice(0, n); }
     for (const f of this.subs) f(ev);
     return ev;
   }

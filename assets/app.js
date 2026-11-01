@@ -326,6 +326,10 @@ function listen() {
   const id = S.cur.id;
   S.close = stream(`/api/sessions/${id}/events?after=${S.seq}`, list => {
     if (S.cur?.id !== id) return;
+    // A hole in the sequence means dsh no longer holds events we never saw: rebuild from the
+    // snapshot rather than draw a reply's tail with no prompt. Once per hole, so a dsh that
+    // still trims can't loop us.
+    if (list[0]?.seq > S.seq + 1 && S.hole !== S.seq) { S.hole = S.seq; S.close?.(); S.close = null; load(id); return; }
     S.retry = 0; for (const ev of list) apply(ev); follow(); conn(true);
   }, err => {
     if (S.cur?.id !== id) return;
