@@ -82,7 +82,13 @@ const stat = http.createServer((req, res) => {
     assert.equal(await page.locator('.md h2').textContent(), 'What found'.replace('What', 'What I'));
     assert.ok(await page.locator('.md pre .hljs-built_in, .md pre code').count());
     assert.match(await page.locator('.think').first().textContent(), /Thought|Thoughts/);
-    assert.match(await page.locator('#meter').textContent(), /5\.2k context/);
+    assert.match(await page.locator('#meter').textContent(), /5\.2k context · \d+ tok\/s/);
+    // Light mode follows the system setting.
+    await page.emulateMedia({ colorScheme: 'light' }); await page.waitForTimeout(150);
+    assert.equal(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), 'rgb(255, 255, 255)');
+    await page.screenshot({ path: shot('light-reply') });
+    await page.emulateMedia({ colorScheme: 'dark' }); await page.waitForTimeout(100);
+    assert.equal(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), 'rgb(0, 0, 0)');
     assert.equal(await page.locator('#title').textContent(), 'What is in this project?');
     await page.screenshot({ path: shot('reply'), fullPage: false });
 
@@ -118,6 +124,11 @@ const stat = http.createServer((req, res) => {
     assert.match(await page.locator('#cwdChip').textContent(), /project\/src$/);
     await page.getByRole('button', { name: 'Sessions' }).click(); await page.getByRole('button', { name: 'Settings' }).click();
     await page.locator('#bal').filter({ hasText: '5.73 USD' }).waitFor();
+    await page.locator('#sheet .seg button', { hasText: 'Light' }).click(); await page.waitForTimeout(150);
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'light');
+    await page.screenshot({ path: shot('light-settings') });
+    await page.locator('#sheet .seg button', { hasText: 'System' }).click();
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), undefined);
     await page.waitForTimeout(400); await page.screenshot({ path: shot('settings') });
     await page.locator('#scrim').click({ position: { x: 200, y: 40 } }); await page.waitForTimeout(250);
 

@@ -110,17 +110,18 @@ export class Runtime {
       if (signal.aborted) return;
       if (s.usage.lastPrompt > COMPACT_AT) await this.compact(ds, signal);
       this.emit('step_start', { step });
-      let r0 = 0, rMs = 0;
-      const thought = () => { if (r0 && !rMs) rMs = Date.now() - r0; };
+      let r0 = 0, rMs = 0, f0 = 0;
+      const thought = () => { f0 ||= Date.now(); if (r0 && !rMs) rMs = Date.now() - r0; };
       const { message, usage, finish } = await ds.stream(
         { model: s.model, messages: this.apiMessages(), tools, effort: s.effort, thinking: s.thinking !== false },
-        { reasoning: d => { r0 ||= Date.now(); this.emit('reasoning', { d }); }, text: d => { thought(); this.emit('text', { d }); }, toolDelta: thought },
+        { reasoning: d => { r0 ||= Date.now(); f0 ||= r0; this.emit('reasoning', { d }); }, text: d => { thought(); this.emit('text', { d }); }, toolDelta: thought },
         signal);
+      const genMs = f0 ? Date.now() - f0 : 0;
       thought();
       if (!message.reasoning_content) delete message.reasoning_content;
       s.messages.push(message);
       if (rMs) s.meta['think' + (s.messages.length - 1)] = rMs;
-      this.account(usage);
+      this.account(usage, genMs);
       this.save();
       if (finish === 'length' && !message.tool_calls) { this.emit('notice', { text: 'Reply hit the output token limit.' }); }
       if (!message.tool_calls?.length) return;
@@ -170,11 +171,13 @@ export class Runtime {
     return false;
   }
 
-  account(u) {
+  // genMs: first streamed token to end of the call, so tok/s is decode speed, not time to first token.
+  account(u, genMs = 0) {
     const U = this.s.usage, c = cost(this.s.model, u);
     U.hit += u.hit; U.miss += u.miss; U.out += u.out; U.reasoning = (U.reasoning || 0) + (u.reasoning || 0);
     U.costPeak = (U.costPeak || 0) + c.peak; U.costOff = (U.costOff || 0) + c.offpeak;
     U.lastPrompt = u.hit + u.miss;
+    if (genMs > 0 && u.out > 0) { u.tps = Math.round(u.out / (genMs / 1000)); U.genOut = (U.genOut || 0) + u.out; U.genMs = (U.genMs || 0) + genMs; U.tps = u.tps; }
     this.emit('usage', { step: u, total: U });
   }
 

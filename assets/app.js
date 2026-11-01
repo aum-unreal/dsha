@@ -72,6 +72,17 @@ const visible = () => N ? N.visible() : !document.hidden;
 function toast(t) { const e = $('#toast'); e.textContent = t; e.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => e.classList.remove('on'), 2200); }
 function copy(t) { N ? N.copy(t) : navigator.clipboard?.writeText(t); toast('Copied'); haptic(); }
 
+/* ---------- theme: system, dark or light; the native side recolours the system bars ---------- */
+const darkMq = matchMedia('(prefers-color-scheme: dark)');
+function applyTheme() {
+  const pref = local.get('theme') || 'system', root = document.documentElement;
+  if (pref === 'system') delete root.dataset.theme; else root.dataset.theme = pref;
+  const dark = pref === 'dark' || pref === 'system' && darkMq.matches;
+  try { N?.theme?.(dark); } catch {}
+}
+darkMq.addEventListener?.('change', applyTheme);
+applyTheme();
+
 /* ---------- markdown ---------- */
 const md = window.markdownit({ linkify: true, breaks: false, highlight(code, lang) { try { if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value; } catch {} return ''; } });
 function renderMd(el, text) {
@@ -134,6 +145,7 @@ function paint(it) {
       e.className = 'tool ' + (it.status || 'run') + (e.classList.contains('open') ? ' open' : '') + (S.sel === it.id ? ' sel' : '');
       e.querySelector('.tn').textContent = tname(it.name);
       e.querySelector('.ts').textContent = it.summary || '';
+      e.querySelector('.ts').classList.toggle('plain', it.name === 'todo_write');
       e.querySelector('.st').textContent = statusText(it);
       e.querySelector('.args').textContent = argsText(it);
       e.querySelector('.res').textContent = it.content ?? it.output ?? '';
@@ -190,15 +202,18 @@ function apply(ev) {
   const L = last();
   switch (ev.type) {
     case 'run_start': setRunning(true); break;
+    case 'step_start': S.gen = { t0: 0, chars: 0 }; break;
     case 'user': {
       const p = S.items.find(x => x.kind === 'user' && x.pending);
       if (p) { p.pending = false; p.text = ev.text; paint(p); } else add({ kind: 'user', text: ev.text, turn: S.items.filter(x => x.kind === 'user').length });
       break;
     }
     case 'reasoning':
+      countGen(ev.d);
       if (L?.kind === 'think' && L.live) { L.text += ev.d; paint(L); } else { closeLive(); add({ kind: 'think', text: ev.d, live: true, t0: ev.t || Date.now() }); }
       break;
     case 'text':
+      countGen(ev.d);
       if (L?.kind === 'text' && L.live) { L.text += ev.d; paint(L); } else { closeLive(); add({ kind: 'text', text: ev.d, live: true, t0: Date.now() }); }
       break;
     case 'tool_call': closeLive(); add({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args || {}, summary: ev.summary, status: 'run', output: '', t0: Date.now() }); break;
@@ -206,7 +221,7 @@ function apply(ev) {
     case 'approval_done': { const t = tool(ev.id); if (t && t.status === 'waiting') { t.status = ev.decision === 'deny' ? 'denied' : 'run'; paint(t); } break; }
     case 'tool_output': { const t = tool(ev.id); if (t) { t.output = clipText((t.output || '') + ev.d, 12000); if (t.el.classList.contains('open')) paint(t); } break; }
     case 'tool_result': { const t = tool(ev.id); if (t) { Object.assign(t, { content: ev.content, status: ev.denied ? 'denied' : ev.ok ? 'ok' : 'fail', ms: ev.ms }); paint(t); } break; }
-    case 'usage': if (S.cur) { S.cur.usage = ev.total; meter(); } break;
+    case 'usage': if (S.cur) { S.cur.usage = ev.total; meter(); } S.gen = null; break;
     case 'todos': S.todos = ev.todos; todos(); break;
     case 'title': if (S.cur) { S.cur.title = ev.title; header(); } break;
     case 'notice': closeLive(); add({ kind: 'notice', text: ev.text }); break;
@@ -219,6 +234,8 @@ function apply(ev) {
       break;
   }
 }
+// Live speed estimate for the model call in flight (about 4 chars a token); the usage event replaces it with the exact figure.
+function countGen(d) { if (S.gen) { S.gen.t0 ||= Date.now(); S.gen.chars += d.length; } }
 const tool = id => S.items.find(x => x.kind === 'tool' && x.id === id);
 
 async function decide(it, d) {
@@ -295,7 +312,7 @@ function meter() {
   const u = s.usage || {}, ctx = u.lastPrompt || 0;
   const k = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
   const c = u.costPeak || 0;
-  $('#meter').innerHTML = `<span><b>${esc(modelName(s.model))}</b> · ${s.thinking === false ? 'no thinking' : esc(s.effort) + ' thinking'}</span><span><b>${k(ctx)}</b> context · <i class="mx">${k((u.hit || 0) + (u.miss || 0))} in · ${k(u.out || 0)} out · </i><b>$${c < 0.01 ? c.toFixed(4) : c.toFixed(3)}</b></span>`; ui();
+  $('#meter').innerHTML = `<span><b>${esc(modelName(s.model))}</b> · ${s.thinking === false ? 'no thinking' : esc(s.effort) + ' thinking'}</span><span><b>${k(ctx)}</b> context · ${u.tps ? `<b>${u.tps}</b> tok/s · ` : ''}<i class="mx">${k((u.hit || 0) + (u.miss || 0))} in · ${k(u.out || 0)} out · </i><b>$${c < 0.01 ? c.toFixed(4) : c.toFixed(3)}</b></span>`; ui();
 }
 const cap = t => String(t || '').replace(/^./, c => c.toUpperCase());
 const modelName = m => ({ 'deepseek-flash': 'Flash', 'deepseek-v4-pro': 'V4 Pro' }[m] || String(m).replace('deepseek-', ''));
@@ -341,6 +358,7 @@ function emptyState() {
 const ago = t => { const m = Math.round((Date.now() - t) / 6e4); return m < 1 ? 'Now' : m < 60 ? m + ' min' : m < 1440 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' d'; };
 
 /* ---------- run strip: every step of the current run, sized by its time ---------- */
+const liveTps = () => { const g = S.gen, dt = g?.t0 ? (Date.now() - g.t0) / 1000 : 0; return dt > 0.5 ? Math.round(g.chars / 4 / dt) : 0; };
 let stripQueued = false;
 function strip() { if (!stripQueued) { stripQueued = true; requestAnimationFrame(() => { stripQueued = false; drawStrip(); }); } }
 function drawStrip() {
@@ -361,7 +379,7 @@ function drawStrip() {
   const cur = steps[steps.length - 1], w = waitingTool(), tools = steps.filter(x => x.kind === 'tool').length;
   const total = steps.reduce((a, x) => a + (x.ms ?? (x.t0 ? now - x.t0 : 0)), 0);
   $('#runText').innerHTML = w ? `<b>Needs you</b> · ${esc(tname(w.name))}`
-    : S.running ? (cur.kind === 'think' && cur.live ? '<b>Thinking</b>' : cur.kind === 'tool' && cur.status === 'run' ? `<b>${esc(tname(cur.name))}</b>` : cur.live ? '<b>Writing</b>' : '<b>Working</b>') + (total ? ' · ' + fmtMs(Math.round(total / 100) * 100) : '')
+    : S.running ? (cur.kind === 'think' && cur.live ? '<b>Thinking</b>' : cur.kind === 'tool' && cur.status === 'run' ? `<b>${esc(tname(cur.name))}</b>` : cur.live ? '<b>Writing</b>' : '<b>Working</b>') + (liveTps() ? ` · ~${liveTps()} tok/s` : total ? ' · ' + fmtMs(Math.round(total / 100) * 100) : '')
     : `${tools} tool call${tools === 1 ? '' : 's'}${total ? ' · ' + fmtMs(Math.round(total / 100) * 100) : ''}`;
 }
 setInterval(() => { if (S.running) strip(); }, 1000);
@@ -527,6 +545,7 @@ async function settingsSheet() {
     <label class="field"><span>Token (<code>dsh token</code>)</span><input id="fTok" type="password" value="${esc(c.token)}" autocapitalize="off" spellcheck="false"></label>
     <button class="secondary wide" data-a="save">Save and reconnect</button>
     <div class="err-text" id="pairErr"></div>
+    <h4>Appearance</h4>${seg('theme', [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']], local.get('theme') || 'system')}
     <h4>DeepSeek API key</h4>
     <div class="kvs"><div class="kv"><span>Status</span><b>${key ? 'Set on backend' : 'Not set'}</b></div><div class="kv"><span>Balance</span><b id="bal">…</b></div></div>
     <label class="field" style="margin-top:14px"><span>Replace key</span><input id="fKey" type="password" placeholder="sk-…" autocapitalize="off" spellcheck="false"></label>
@@ -535,6 +554,7 @@ async function settingsSheet() {
     <div class="rows"><button data-a="defs">${I.gear}<span>${esc(S.cfg ? `${modelName(S.cfg.model)} · ${S.cfg.thinking === false ? 'no thinking' : S.cfg.effort + ' thinking'} · ${MODES[S.cfg.mode]?.[0] || S.cfg.mode}` : 'Unknown')}</span></button><button data-a="dcwd">${I.folder}<span>${esc(short(S.cfg?.cwd || ''))}</span></button></div>
     ${N ? `<h4>Notifications</h4><button class="secondary wide" data-a="notif">Allow notifications</button><p class="hint">Get notified when a run finishes or needs approval while DSHA is in the background.</p>` : ''}
     <h4>About</h4><div class="kvs"><div class="kv"><span>DSHA</span><b>${esc(c.version)}</b></div><div class="kv"><span>dsh</span><b>${esc(S.health?.version || 'Not connected')}</b></div></div><div class="rows" style="margin-top:10px"><button data-a="lic">${I.file}<span>Third-party licences</span></button></div>`, {
+    theme: el => { local.set('theme', el.dataset.v); applyTheme(); b.querySelectorAll('[data-a=theme]').forEach(x => x.classList.toggle('on', x === el)); },
     pair: el => { el.disabled = true; $('#pairErr').textContent = ''; pairTermux((ok, err) => { el.disabled = false; if (ok) { toast('Paired'); closeSheet(); boot(); } else $('#pairErr').textContent = err; }); },
     save: () => { saveSettings($('#fUrl').value.trim().replace(/\/+$/, ''), $('#fTok').value.trim()); closeSheet(); boot(); },
     key: async el => { const k = $('#fKey').value.trim(); if (!k) return; el.disabled = true; try { await api('PUT', '/api/key', { key: k }); toast('Key saved'); S.health = await api('GET', '/api/health'); settingsSheet(); } catch (e) { toast(e.message); el.disabled = false; } },
@@ -664,7 +684,7 @@ function inspector() {
       <div class="kpis"><div class="kpi"><span>Spent</span><b>$${(u.costPeak || 0).toFixed(4)}</b><small>$${(u.costOff || 0).toFixed(4)} off-peak</small></div>
       <div class="kpi"><span>Cache hits</span><b>${hitPct}%</b><small>${k(u.hit || 0)} of ${k(inTok)} in</small></div>
       <div class="kpi"><span>Tool calls</span><b>${tools.length}</b><small>${tools.filter(t => t.status === 'fail').length} failed · ${tools.filter(t => t.status === 'denied').length} denied</small></div>
-      <div class="kpi"><span>Output</span><b>${k(u.out || 0)}</b><small>tokens written</small></div></div>
+      <div class="kpi"><span>Speed</span><b>${u.tps ? u.tps + ' tok/s' : 'None yet'}</b><small>${u.genMs ? `${Math.round(u.genOut / (u.genMs / 1000))} tok/s average · ` : ''}${k(u.out || 0)} out</small></div></div>
       <div class="panel"><h3>Session</h3><div class="kv"><span>Model</span><b>${esc(modelName(s.model))}</b></div><div class="kv"><span>Thinking</span><b>${s.thinking === false ? 'Off' : esc(cap(s.effort))}</b></div><div class="kv"><span>Mode</span><b>${esc(MODES[s.mode]?.[0] || s.mode)}</b></div><div class="kv"><span>Folder</span><b>${esc(short(s.cwd))}</b></div></div>
       ${files.size ? `<div class="panel"><h3>Files touched</h3><ul class="files">${[...files].map(([p, m]) => `<li><span>${esc(p)}</span><em>${m === 'read' ? 'Read' : m === 'write' ? 'Written' : 'Edited'}</em></li>`).join('')}</ul></div>` : ''}`;
   }

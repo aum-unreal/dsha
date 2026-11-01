@@ -25,6 +25,7 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
     private static final String DSH = "/data/data/com.termux/files/home/.local/bin/dsh", BASH = "/data/data/com.termux/files/usr/bin/bash";
     private static final int REQ_PAIR = 21, REQ_PERM = 22, REQ_NOTIF = 23;
     private WebView web;
+    private FrameLayout root;
     private SharedPreferences prefs;
     private final ExecutorService pool = Executors.newCachedThreadPool();
     private final Map<String, HttpURLConnection> streams = new ConcurrentHashMap<>();
@@ -37,10 +38,28 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
     private float hingeAngle = -1, sentAngle = -2;
     private String sentGeom = "";
 
+    // The web UI's theme (system, dark or light) drives the window behind it and the system bar icons.
+    private void applyBars(boolean dark) {
+        int bg = dark ? 0xff000000 : 0xffffffff;
+        root.setBackgroundColor(bg); web.setBackgroundColor(bg);
+        android.view.Window w = getWindow();
+        w.setStatusBarColor(bg); w.setNavigationBarColor(bg);
+        if (Build.VERSION.SDK_INT >= 30) {
+            android.view.WindowInsetsController c = w.getInsetsController();
+            int m = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS | android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+            if (c != null) c.setSystemBarsAppearance(dark ? 0 : m, m);
+        } else {
+            android.view.View d = w.getDecorView();
+            int m = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            d.setSystemUiVisibility(dark ? d.getSystemUiVisibility() & ~m : d.getSystemUiVisibility() | m);
+        }
+        prefs.edit().putBoolean("dark", dark).apply();
+    }
+
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = getSharedPreferences("dsha", MODE_PRIVATE);
-        FrameLayout root = new FrameLayout(this);
+        root = new FrameLayout(this);
         root.setBackgroundColor(0xff000000);
         root.setOnApplyWindowInsetsListener((v, insets) -> {
             v.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(), insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
@@ -51,6 +70,7 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         web.setVerticalScrollBarEnabled(false);
         root.addView(web, new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
+        applyBars(prefs.getBoolean("dark", true));
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true); s.setDomStorageEnabled(true);
         s.setAllowFileAccess(false); s.setAllowContentAccess(false);
@@ -199,6 +219,7 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         }
         @JavascriptInterface public void saveSettings(String url, String tok) { prefs.edit().putString("url", url.trim()).putString("token", tok.trim()).apply(); }
         @JavascriptInterface public void pairTermux() { main.post(MainActivity.this::pair); }
+        @JavascriptInterface public void theme(boolean dark) { main.post(() -> applyBars(dark)); }
 
         // Async HTTP. Result arrives as native.done(id, status, bodyText).
         @JavascriptInterface public void request(String id, String method, String path, String body) {
