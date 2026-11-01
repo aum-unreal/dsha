@@ -18,6 +18,7 @@ const I = {
   list: svg('<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>'), retry: svg('<path d="M4 4v6h6"/><path d="M20 12a8 8 0 0 0-14-5.3L4 10"/><path d="M20 20v-6h-6"/><path d="M4 12a8 8 0 0 0 14 5.3l2-3.3"/>'),
   arrow: svg('<path d="M5 12h14M13 6l6 6-6 6"/>'), activity: svg('<path d="M3 12h4l3-8 4 16 3-8h4"/>'), chart: svg('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'), fold: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>'),
   circle: svg('<circle cx="12" cy="12" r="7"/>'), half: svg('<circle cx="12" cy="12" r="7"/><path d="M12 5a7 7 0 0 1 0 14z" fill="currentColor"/>'),
+  expand: svg('<path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/>'), shrink: svg('<path d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5"/>'),
   share: svg('<path d="M12 3v13M7 8l5-5 5 5"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/>'), trash: svg('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'), link: svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
 };
 const MARK = '<svg class="mark" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="6" fill="#fff" stroke="none"/><path d="M6.5 13c1.8-3.4 3.7-3.4 5.5 0s3.7 3.4 5.5 0" stroke="#000" stroke-width="2.2"/></svg>';
@@ -112,7 +113,7 @@ function build(it) {
     case 'tool': {
       const e = h('div', 'tool');
       e.innerHTML = `<button class="head"><span class="ti">${TOOL_ICON[it.name] || I.term}</span><span class="tn"></span><span class="ts"></span><span class="st"></span></button><div class="ask"><p></p><div class="cmd"></div><div class="row"><button class="deny">Deny</button><button class="always">Always</button><button class="allow">Allow</button></div></div><div class="out"><pre class="args"></pre><pre class="res"></pre></div>`;
-      e.querySelector('.head').onclick = () => { haptic(); if (layout.mode === 'wide') { S.sel = S.sel === it.id ? null : it.id; S.itab = 'activity'; for (const t of S.items) if (t.kind === 'tool') t.el.classList.toggle('sel', t.id === S.sel); ui(); } else e.classList.toggle('open'); };
+      e.querySelector('.head').onclick = () => { haptic(); if (layout.mode === 'wide') { if (chatFull) setChatFull(false); S.sel = S.sel === it.id ? null : it.id; S.itab = 'activity'; for (const t of S.items) if (t.kind === 'tool') t.el.classList.toggle('sel', t.id === S.sel); ui(); } else e.classList.toggle('open'); };
       for (const d of ['allow', 'always', 'deny']) e.querySelector('.' + d).onclick = () => decide(it, d);
       return e;
     }
@@ -374,7 +375,7 @@ function drawStrip() {
     const st = x.kind === 'tool' ? x.status || 'run' : x.live ? 'run' : x.kind === 'think' ? 'think' : 'reply';
     b.dataset.s = st; b.style.flex = `${Math.max(400, Math.min(dur(x), 60000))} 1 0`;
     b.ariaLabel = x.kind === 'tool' ? `${tname(x.name)}, ${statusText(x)}` : x.kind === 'think' ? 'Thinking' : 'Reply';
-    b.onclick = () => { haptic(); stick = false; x.el.scrollIntoView({ block: 'center', behavior: 'smooth' }); if (x.kind === 'tool' && layout.mode === 'wide') { S.sel = x.id; S.itab = 'activity'; for (const t of S.items) if (t.kind === 'tool') t.el.classList.toggle('sel', t.id === S.sel); ui(); } };
+    b.onclick = () => { haptic(); stick = false; x.el.scrollIntoView({ block: 'center', behavior: 'smooth' }); if (x.kind === 'tool' && layout.mode === 'wide') { if (chatFull) setChatFull(false); S.sel = x.id; S.itab = 'activity'; for (const t of S.items) if (t.kind === 'tool') t.el.classList.toggle('sel', t.id === S.sel); ui(); } };
   });
   const cur = steps[steps.length - 1], w = waitingTool(), tools = steps.filter(x => x.kind === 'tool').length;
   const total = steps.reduce((a, x) => a + (x.ms ?? (x.t0 ? now - x.t0 : 0)), 0);
@@ -450,6 +451,7 @@ function drawer(on) { document.body.classList.toggle('drawer', on); $('#drawer')
 document.querySelector('.brand').innerHTML = MARK + '<span>DSHA</span>';
 $('#menuBtn').innerHTML = I.menu; $('#menuBtn').onclick = () => { haptic(); drawer(true); };
 $('#moreBtn').innerHTML = I.more; $('#moreBtn').onclick = () => { haptic(); optionsSheet(); };
+$('#fsBtn').onclick = () => { haptic(); setChatFull(!chatFull); };
 $('#settingsBtn').innerHTML = I.gear; $('#settingsBtn').onclick = () => { drawer(false); settingsSheet(); };
 $('#newBtn').innerHTML = I.plus + 'New session'; $('#newBtn').onclick = () => { drawer(false); newSession(); };
 $('#scrim').onclick = () => { drawer(false); closeSheet(); };
@@ -607,6 +609,22 @@ async function boot() {
 // Viewport Segments API when the WebView has it.
 const layout = { mode: 'phone', angle: -1, cx: null, cy: null };
 window.native.posture = (angle, cx, cy) => { Object.assign(layout, { angle, cx, cy }); relayout(); };
+
+// Fullscreen chat: in wide mode the chat can take the pane the Inspector would
+// use. The choice survives unfolding/folding; the button only exists in wide.
+let chatFull = local.get('chatFull') === '1';
+function paintFull() {
+  const on = chatFull && layout.mode === 'wide';
+  document.body.classList.toggle('chatfull', on);
+  const b = $('#fsBtn');
+  b.innerHTML = on ? I.shrink : I.expand;
+  b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  b.setAttribute('aria-label', on ? 'Exit fullscreen chat' : 'Fullscreen chat');
+}
+function setChatFull(on) {
+  chatFull = !!on; local.set('chatFull', chatFull ? '1' : '0'); paintFull();
+  requestAnimationFrame(follow);
+}
 function relayout() {
   const w = innerWidth, hgt = innerHeight, root = document.documentElement.style;
   const segs = window.viewport?.segments, q = new URLSearchParams(location.search).get('posture');
@@ -622,6 +640,7 @@ function relayout() {
   const changed = mode !== layout.mode;
   layout.mode = mode;
   for (const m of ['wide', 'tabletop']) document.body.classList.toggle(m, mode === m);
+  paintFull();
   if (changed) { if (mode === 'wide') { drawer(false); for (const t of S.items) t.el?.classList.remove('open'); } if (mode !== 'wide') S.sel = null; for (const t of S.items) if (t.kind === 'tool') paint(t); ui(true); requestAnimationFrame(follow); }
 }
 addEventListener('resize', relayout);

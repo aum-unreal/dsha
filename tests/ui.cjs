@@ -161,6 +161,27 @@ const stat = http.createServer((req, res) => {
     await page.screenshot({ path: shot('unfolded-stats') });
     await page.locator('#itabs button', { hasText: 'Activity' }).click();
 
+    // Fullscreen chat: the Inspector and hinge step aside, chat takes the unfolded screen.
+    await page.locator('#fsBtn').click(); await page.waitForTimeout(250);
+    assert.ok(await page.evaluate(() => document.body.classList.contains('chatfull')));
+    assert.equal(await page.locator('#inspector').isVisible(), false);
+    assert.equal(await page.locator('#fsBtn').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('#fsBtn').getAttribute('aria-label'), 'Exit fullscreen chat');
+    const fullW = await page.locator('#chatPane').evaluate(e => e.getBoundingClientRect().width);
+    assert.ok(Math.abs(fullW - 748) < 2, 'chat spans the unfolded screen: ' + fullW);
+    await page.screenshot({ path: shot('unfolded-fullscreen') });
+    // Folded, the button is gone and the class drops; unfolding restores the choice.
+    await page.setViewportSize({ width: 412, height: 880 }); await page.waitForTimeout(250);
+    assert.equal(await page.locator('#fsBtn').isVisible(), false);
+    assert.equal(await page.evaluate(() => document.body.classList.contains('chatfull')), false);
+    await page.setViewportSize({ width: 748, height: 880 });
+    await page.evaluate(() => window.native.posture(180, 374, 440)); await page.waitForTimeout(250);
+    assert.ok(await page.evaluate(() => document.body.classList.contains('chatfull')), 'unfolding remembers fullscreen');
+    // Tapping a tool brings the Inspector back into view.
+    await page.locator('.tool').first().locator('.head').click(); await page.waitForTimeout(250);
+    assert.equal(await page.evaluate(() => document.body.classList.contains('chatfull')), false);
+    assert.ok(await page.locator('#inspector').isVisible());
+
     // Flex mode: half-folded in landscape → chat above the hinge, deck below; approve from the deck.
     await page.locator('#modeChip').click(); await page.getByRole('button', { name: 'Ask' }).click(); await page.waitForTimeout(200);
     await page.setViewportSize({ width: 880, height: 748 });

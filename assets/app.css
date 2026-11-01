@@ -64,6 +64,7 @@ svg { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; s
 #app { height: 100%; display: flex; overflow: hidden; }
 #chatPane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; height: 100%; position: relative; }
 #inspector, #hinge { display: none; }
+#fsBtn { display: none; } /* only meaningful when the Inspector is on screen */
 
 /* ---------- top bar ---------- */
 #top { min-height: var(--top); display: flex; align-items: center; gap: 4px; padding: 4px 6px; background: var(--ground); position: relative; z-index: 3; flex: none; border-bottom: 1px solid transparent; transition: border-color .15s; }
@@ -299,8 +300,12 @@ body.wide #app { display: grid; grid-template-columns: var(--paneL) var(--hingeW
 body.wide #inspector { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; background: var(--ground); box-shadow: inset 1px 0 var(--border); }
 body.wide #hinge { display: block; }
 body.wide #menuBtn { display: none; }
+body.wide #fsBtn { display: grid; }
 body.wide #top { padding-left: 12px; }
 body.wide #drawer { display: none; }
+/* Fullscreen chat: the Inspector and hinge step aside, the chat takes the whole screen. */
+body.wide.chatfull #app { grid-template-columns: minmax(0, 1fr); }
+body.wide.chatfull #inspector, body.wide.chatfull #hinge { display: none; }
 
 /* ---------- Flex mode: half-folded, chat above the hinge, controls below ---------- */
 body.tabletop #chatPane { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) var(--hingeW) minmax(0, calc(100% - var(--hy) - var(--hingeW) / 2)); }
