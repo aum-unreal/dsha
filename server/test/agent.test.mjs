@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'dsh-test-'));
+process.env.DSH_TEMP_ROOTS = path.join(tmp, 'no-temp');           // test folders live in $TMPDIR
 process.env.DSH_HOME = path.join(tmp, 'home');
 process.env.DSH_KEY_FILE = path.join(tmp, 'key');
 fs.writeFileSync(process.env.DSH_KEY_FILE, 'sk-test-0123456789\n');

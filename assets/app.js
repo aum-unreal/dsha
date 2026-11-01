@@ -299,13 +299,24 @@ function renderSessions(box = $('#sessions')) {
   }
   if (!S.sessions.length) box.append(h('div', 'hint', 'No sessions yet. Start one and it shows up here.'));
 }
-const home = () => S.health?.home ? S.health.home.replace(/\/\.dsh$/, '') : '/data/data/com.termux/files/home';
+const home = () => S.health?.userHome || (S.health?.home ? S.health.home.replace(/\/\.dsh$/, '') : '/data/data/com.termux/files/home');
 const short = p => String(p || '').replace(home(), '~');
+// Temp folders (from dsh's health) can be wiped, so new sessions never start in one.
+const isTempDir = p => !!p && (S.health?.tempRoots || []).some(t => p === t || p.startsWith(t + '/'));
+const newStart = () => [S.cur?.cwd, S.cfg?.cwd].find(d => d && !isTempDir(d)) || home();
+function tempBar() {
+  const bar = $('#tempBar'), on = !!S.cur && isTempDir(S.cur.cwd);
+  bar.hidden = !on; if (!on) return;
+  bar.innerHTML = `<p><b>Temporary folder:</b> files here can be wiped.</p><button data-t="pick">Choose folder</button><button class="primary" data-t="home">Use home folder</button>`;
+  bar.querySelector('[data-t=home]').onclick = () => { haptic(); patch({ cwd: home() }); };
+  bar.querySelector('[data-t=pick]').onclick = () => pickDir(home(), d => patch({ cwd: d }));
+}
 
 function header() {
   const s = S.cur;
   $('#title').textContent = s ? s.title : 'DSHA';
   $('#cwdChip').textContent = s ? short(s.cwd) : S.health ? 'Not in a session' : 'Not connected';
+  tempBar();
   const m = s?.mode || S.cfg?.mode || 'ask';
   $('#modeChip').className = 'chip ' + m; $('#modeChip').textContent = MODES[m][0];
 }
@@ -346,7 +357,7 @@ function emptyState() {
   if (S.items.length) { e.hidden = true; return; }
   e.hidden = false;
   const recent = S.cur ? [] : S.sessions.slice(0, 3);
-  e.innerHTML = `<h2>What should dsh do?</h2><div class="where">${S.cur ? 'Working in <code>' + esc(short(S.cur.cwd)) + '</code>' : 'A new session starts in <code>' + esc(short(S.cfg?.cwd)) + '</code>'}</div>
+  e.innerHTML = `<h2>What should dsh do?</h2><div class="where">${S.cur ? 'Working in <code>' + esc(short(S.cur.cwd)) + '</code>' : 'A new session starts in <code>' + esc(short(newStart())) + '</code>'}</div>
     <div class="group"><h3>Start with</h3><div class="rows" id="starters"></div></div>
     ${recent.length ? '<div class="group"><h3>Pick up where you left off</h3><div class="rows" id="recent"></div></div>' : ''}`;
   for (const t of ['Summarise this project and how to build it', 'What changed in git recently?', 'Find TODOs and rank them by importance', 'Check disk usage and the biggest folders here']) {
@@ -724,8 +735,8 @@ function transcript() {
 }
 
 async function newSession() {
-  const recents = [...new Set(S.sessions.map(x => x.cwd))].slice(0, 5);
-  const start = S.cur?.cwd || S.cfg?.cwd;
+  const recents = [...new Set(S.sessions.map(x => x.cwd))].filter(d => !isTempDir(d)).slice(0, 5);
+  const start = newStart();
   sheet(`<h3>New session</h3><div class="path">${esc(short(start))}</div><div class="rowbtns"><button class="secondary" data-a="pick">${I.folder}Choose folder</button><button class="primary" data-a="go">Start</button></div>${recents.length ? `<h4>Recent folders</h4><div class="rows">${recents.map((r, i) => `<button data-a="r" data-i="${i}">${I.folder}<span>${esc(short(r))}</span></button>`).join('')}</div>` : ''}`, {
     go: () => create(start), r: el => create(recents[+el.dataset.i]), pick: () => pickDir(start, create),
   });

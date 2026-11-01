@@ -5,14 +5,14 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { loadConfig, saveConfig, readKey, writeKey, listSessions, createSession, deleteSession, HOME } from './store.mjs';
+import { loadConfig, saveConfig, readKey, writeKey, listSessions, createSession, deleteSession, HOME, TEMP_ROOTS, isTemp, USER_HOME } from './store.mjs';
 import { runtime, dropRuntime, activeRuns } from './agent.mjs';
 import { DeepSeek } from './deepseek.mjs';
 import { Mcp, loadMcpConfig, saveMcpConfig } from './mcp.mjs';
 import { listSkills, readSkill, setSkill, setClaudeSkills, createSkill, deleteSkill, instructionFiles, writeInstructions, listMemory, readMemory, deleteMemory } from './skills.mjs';
 import { systemPrompt } from './agent.mjs';
 
-export const VERSION = '0.5.0';
+export const VERSION = '0.5.1';
 
 export function createServer({ config = loadConfig } = {}) {
   let cfg = config();
@@ -21,9 +21,13 @@ export function createServer({ config = loadConfig } = {}) {
   const deps = { config: getCfg, mcp };
 
   const routes = [
-    ['GET', /^\/api\/health$/, () => ({ ok: true, version: VERSION, hasKey: !!readKey(), model: cfg.model, home: HOME, running: activeRuns() })],
+    ['GET', /^\/api\/health$/, () => ({ ok: true, version: VERSION, hasKey: !!readKey(), model: cfg.model, home: HOME, running: activeRuns(), tempRoots: TEMP_ROOTS, userHome: USER_HOME })],
     ['GET', /^\/api\/config$/, () => pub(cfg)],
-    ['PUT', /^\/api\/config$/, (_, b) => { const p = pick(b, ['model', 'effort', 'mode', 'thinking', 'maxSteps', 'cwd', 'base']); cfg = saveConfig(p); return pub(cfg); }],
+    ['PUT', /^\/api\/config$/, (_, b) => {
+      const p = pick(b, ['model', 'effort', 'mode', 'thinking', 'maxSteps', 'cwd', 'base']);
+      if (p.cwd) { p.cwd = path.resolve(expand(p.cwd)); if (!isDir(p.cwd)) throw httpErr(400, 'Not a directory: ' + p.cwd); if (isTemp(p.cwd)) throw httpErr(400, tempMsg(p.cwd)); }
+      cfg = saveConfig(p); return pub(cfg);
+    }],
     ['PUT', /^\/api\/key$/, async (_, b) => {
       const k = String(b.key || '').trim();
       if (!/^sk-[\w-]{10,}$/.test(k)) throw httpErr(400, 'That does not look like a DeepSeek key (sk-…)');
@@ -70,7 +74,12 @@ export function createServer({ config = loadConfig } = {}) {
     ['GET', /^\/api\/models$/, () => api().models()],
     ['GET', /^\/api\/balance$/, () => api().balance()],
     ['GET', /^\/api\/sessions$/, () => listSessions().map(s => ({ ...s, running: activeRuns().includes(s.id) }))],
-    ['POST', /^\/api\/sessions$/, (_, b) => { const cwd = b.cwd ? path.resolve(expand(b.cwd)) : cfg.cwd; if (!isDir(cwd)) throw httpErr(400, 'Not a directory: ' + cwd); return createSession(cfg, { ...pick(b, ['title', 'model', 'effort', 'mode', 'thinking']), cwd }); }],
+    ['POST', /^\/api\/sessions$/, (_, b) => {
+      // New sessions start somewhere that survives: never a temp folder, and the default falls back to home.
+      const cwd = b.cwd ? path.resolve(expand(b.cwd)) : isTemp(cfg.cwd) || !isDir(cfg.cwd) ? USER_HOME : cfg.cwd;
+      if (!isDir(cwd)) throw httpErr(400, 'Not a directory: ' + cwd);
+      if (isTemp(cwd)) throw httpErr(400, tempMsg(cwd));
+      return createSession(cfg, { ...pick(b, ['title', 'model', 'effort', 'mode', 'thinking']), cwd }); }],
     ['GET', /^\/api\/sessions\/(\w+)$/, ([id]) => rt(id).snapshot()],
     ['PATCH', /^\/api\/sessions\/(\w+)$/, ([id], b) => {
       const r = rt(id), p = pick(b, ['title', 'model', 'effort', 'mode', 'thinking', 'cwd']);
@@ -164,3 +173,5 @@ const isDir = p => { try { return fs.statSync(p).isDirectory(); } catch { return
 
 // "node server.mjs --flag 'a b'" -> ['node', 'server.mjs', '--flag', 'a b']
 function splitArgs(line) { return (line.match(/"[^"]*"|'[^']*'|\S+/g) || []).map(x => x.replace(/^(["'])(.*)\1$/, '$2')); }
+
+const tempMsg = d => `${d} is a temporary folder that can be wiped; pick one under your home folder`;

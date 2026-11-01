@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'dsh-mcp-'));
+process.env.DSH_TEMP_ROOTS = path.join(tmp, 'no-temp');           // test folders live in $TMPDIR
 process.env.DSH_HOME = path.join(tmp, 'home');
 process.env.DSH_KEY_FILE = path.join(tmp, 'key');
 fs.writeFileSync(process.env.DSH_KEY_FILE, 'sk-test-0123456789\n');

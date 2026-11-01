@@ -8,6 +8,7 @@ import path from 'node:path';
 const tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'dsh-manage-'));
 process.env.HOME = path.join(tmp, 'user');                       // keeps the real ~/.claude/skills out
 process.env.DSH_HOME = path.join(tmp, 'user', '.dsh');
+process.env.DSH_TEMP_ROOTS = path.join(tmp, 'scratch');                 // stands in for $PREFIX/tmp
 process.env.DSH_KEY_FILE = path.join(tmp, 'key');
 fs.writeFileSync(process.env.DSH_KEY_FILE, 'sk-test-0123456789\n');
 const work = path.join(tmp, 'work'); fs.mkdirSync(work, { recursive: true });
@@ -145,4 +146,23 @@ test('session_log: compact digest marks failures and denials', async () => {
     { role: 'assistant', content: 'Use ./build.sh instead.' }] };
   assert.equal(sessionDigest(s), `Session x1: Fix build (${work})\nUSER: Build it\nTOOL bash: make\n  FAILED: make: *** No rule\n[exit 2]\nTOOL bash: rm -rf build\n  DENIED by the user\nDSH: Use ./build.sh instead.`);
   assert.match(await TOOLS.session_log.run({ list: true }, {}), /No sessions\.|\|/);
+});
+
+test('sessions start in persistent storage: temp folders refused, default falls back to home', async () => {
+  const scratch = path.join(tmp, 'scratch', 'live'); fs.mkdirSync(scratch, { recursive: true });
+  let r = await api('POST', '/api/sessions', { cwd: scratch });
+  assert.equal(r.status, 400); assert.match(r.json.error, /temporary folder/);
+  assert.equal((await api('PUT', '/api/config', { cwd: scratch })).status, 400);
+  assert.ok((await api('GET', '/api/health')).json.tempRoots.includes(fs.realpathSync(path.join(tmp, 'scratch'))));
+  // A default folder that is (or became) temporary: new sessions start in home instead.
+  const { saveConfig } = await import('../lib/store.mjs');
+  const cfgFile = path.join(process.env.DSH_HOME, 'config.json'), before = fs.readFileSync(cfgFile, 'utf8');
+  saveConfig({ cwd: scratch });
+  const srv2 = (await import('../lib/server.mjs')).createServer(); await new Promise(res => srv2.listen(0, '127.0.0.1', res));
+  const s = await (await fetch(`http://127.0.0.1:${srv2.address().port}/api/sessions`, { method: 'POST', headers: { authorization: 'Bearer tok', 'content-type': 'application/json' }, body: '{}' })).json();
+  srv2.close(); fs.writeFileSync(cfgFile, before);
+  assert.equal(s.cwd, process.env.HOME);
+  // An existing session can still be pointed anywhere; the app warns instead.
+  r = await api('PATCH', '/api/sessions/' + s.id, { cwd: scratch });
+  assert.equal(r.status, 200);
 });

@@ -402,3 +402,10 @@ pre.sys { max-height: 64vh; }
 .agentrow { margin-top: 8px; }
 .agentrow > button > .rx { font-weight: 500; }
 .rows > button > span.sdot { flex: none; }
+
+/* old sessions in a temp folder: warn above the composer, offer a persistent one */
+#tempBar { max-width: 720px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 8px 8px 14px; border-radius: var(--radius-inner); background: var(--pill-warning-bg); color: var(--pill-warning-ink); }
+#tempBar p { margin: 0; flex: 1 1 100%; font-size: 13px; line-height: 18px; } #tempBar b { font-weight: 600; }
+#tempBar button { height: 32px; padding: 0 12px; border-radius: var(--radius-control); font-size: 13px; font-weight: 600; box-shadow: inset 0 0 0 1px var(--pill-warning-ink); }
+#tempBar button.primary { box-shadow: none; }
+#tempBar button[data-t=pick] { margin-left: auto; }

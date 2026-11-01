@@ -9,6 +9,16 @@ export const HOME = process.env.DSH_HOME || path.join(process.env.HOME || '.', '
 export const KEY_FILE = process.env.DSH_KEY_FILE || path.join(process.env.HOME || '.', '.config/deepseek/key');
 const SESS = path.join(HOME, 'sessions');
 
+// Folders Android or Termux may wipe (scratchpads, caches). Sessions never start in one; the app
+// warns about older sessions that live there. DSH_TEMP_ROOTS (colon-separated) overrides, for tests.
+export const TEMP_ROOTS = (process.env.DSH_TEMP_ROOTS ?? [process.env.PREFIX && path.join(process.env.PREFIX, 'tmp'), process.env.TMPDIR, '/tmp', '/data/local/tmp'].filter(Boolean).join(':'))
+  .split(':').filter(Boolean).map(p => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } }).filter((p, i, a) => a.indexOf(p) === i);
+export function isTemp(p) {
+  let r; try { r = fs.realpathSync(p); } catch { r = path.resolve(p); }
+  return TEMP_ROOTS.some(t => r === t || r.startsWith(t + '/'));
+}
+export const USER_HOME = process.env.HOME || '/';
+
 const DEFAULTS = { host: '127.0.0.1', port: 8787, model: 'deepseek-flash', effort: 'high', thinking: true, mode: 'ask', maxSteps: 80, base: 'https://api.deepseek.com', cwd: process.env.HOME || '/' };
 
 export function writeAtomic(file, data, mode) {

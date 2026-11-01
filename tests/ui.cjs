@@ -54,7 +54,7 @@ const stat = http.createServer((req, res) => {
   const mem = path.join(tmp, 'home', 'memory'); fs.mkdirSync(mem, { recursive: true });
   fs.writeFileSync(path.join(mem, 'fold-phone.md'), '---\nname: fold-phone\ndescription: User is on a Galaxy Z Fold; judge layouts at 750 CSS px\ntype: user\n---\nInner screen about 750 CSS px wide.\n');
   fs.writeFileSync(path.join(mem, 'MEMORY.md'), '- [Fold phone](fold-phone.md) — judge layouts at 750px\n');
-  const dsh = spawn(process.execPath, [path.resolve(__dirname, '../server/dsh.mjs'), 'serve'], { env: { ...process.env, HOME: tmp, DSH_HOME: path.join(tmp, 'home'), DSH_KEY_FILE: path.join(tmp, 'key') }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const dsh = spawn(process.execPath, [path.resolve(__dirname, '../server/dsh.mjs'), 'serve'], { env: { ...process.env, HOME: tmp, DSH_TEMP_ROOTS: path.join(tmp, 'scratch'), DSH_HOME: path.join(tmp, 'home'), DSH_KEY_FILE: path.join(tmp, 'key') }, stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise(r => dsh.stdout.once('data', r));
   const browser = await chromium.launch({ ...launch(), headless: true });
   const ctx = await browser.newContext({ viewport: { width: 412, height: 860 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
@@ -229,6 +229,16 @@ const stat = http.createServer((req, res) => {
     await page.locator('#sheet .kpi', { hasText: 'Balance' }).filter({ hasText: '5.73 USD' }).waitFor();
     await page.waitForTimeout(250); await page.screenshot({ path: shot('usage') });
     await page.locator('#scrim').click({ position: { x: 180, y: 20 } }); await page.waitForTimeout(250);
+
+    // An older session in a temp folder gets a warning and a one-tap move to home; new sessions never start there.
+    const scratch = path.join(tmp, 'scratch', 'live'); fs.mkdirSync(scratch, { recursive: true });
+    const sid = await page.evaluate(() => localStorage.getItem('dsha.last'));
+    await fetch(`http://127.0.0.1:${DSH}/api/sessions/${sid}`, { method: 'PATCH', headers: { authorization: 'Bearer uitoken', 'content-type': 'application/json' }, body: JSON.stringify({ cwd: scratch }) });
+    await page.reload(); await page.locator('#tempBar', { hasText: 'Temporary folder' }).waitFor();
+    await page.waitForTimeout(250); await page.screenshot({ path: shot('temp-folder') });
+    await page.getByRole('button', { name: 'Use home folder' }).click();
+    await page.locator('#tempBar').waitFor({ state: 'hidden' });
+    assert.equal(await page.locator('#cwdChip').textContent(), '~');
 
     // Agent setup page: plugins, skills, instruction files.
     await page.getByRole('button', { name: 'Sessions' }).click(); await page.waitForTimeout(250);
