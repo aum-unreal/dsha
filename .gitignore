@@ -4,3 +4,4 @@ build/
 tests/*.png
 tests/*.log
 node_modules/
+runtime/

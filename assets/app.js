@@ -46,7 +46,10 @@ window.native = {
   resume() { if (S.cur) resync(); refreshSessions(); },
 };
 const local = { get: k => { try { return localStorage.getItem('dsha.' + k) || ''; } catch { return ''; } }, set: (k, v) => { try { localStorage.setItem('dsha.' + k, v); } catch {} } };
-const settings = () => N ? JSON.parse(N.settings()) : { url: local.get('url') || 'http://127.0.0.1:8787', token: local.get('token'), version: 'web' };
+// In a browser, ?standalone=1 stands in for the Standalone build (tests): the built-in backend, no native side.
+const settings = () => N ? JSON.parse(N.settings()) : { url: local.get('url') || 'http://127.0.0.1:8787', token: local.get('token'), version: 'web', ...(/[?&]standalone=1/.test(location.search) ? { standalone: true, backend: 'builtin', allFiles: false } : {}) };
+// DSHA Standalone carries dsh inside the app (Backend.java); "builtin" means the UI talks to that one.
+const builtin = () => { const c = settings(); return !!c.standalone && c.backend === 'builtin'; };
 const saveSettings = (url, token) => N ? N.saveSettings(url, token) : (local.set('url', url), local.set('token', token));
 
 function api(method, path, body) {
@@ -443,11 +446,12 @@ function emptyState() {
   const e = $('#empty');
   if (S.items.length) { e.hidden = true; return; }
   e.hidden = false;
+  if (builtin() && S.health && !S.health.hasKey) return keyScreen(e);
   const recent = S.cur ? [] : S.sessions.slice(0, 3);
   e.innerHTML = `<h2>What should dsh do?</h2><div class="where">${S.cur ? 'Working in <code>' + esc(short(S.cur.cwd)) + '</code>' : 'A new session starts in <code>' + esc(short(newStart())) + '</code>'}</div>
     <div class="group"><h3>Start with</h3><div class="rows" id="starters"></div></div>
     ${recent.length ? '<div class="group"><h3>Pick up where you left off</h3><div class="rows" id="recent"></div></div>' : ''}`;
-  for (const t of ['Summarise this project and how to build it', 'What changed in git recently?', 'Find TODOs and rank them by importance', 'Check disk usage and the biggest folders here']) {
+  for (const t of ['Summarise this project and how to build it', builtin() ? 'Build a small to-do web page and preview it' : 'What changed in git recently?', 'Find TODOs and rank them by importance', 'Check disk usage and the biggest folders here']) {
     const b = h('button', null, `<span class="rx r1">${esc(t)}</span>${I.arrow}`); b.onclick = () => { input.value = t; send(); }; $('#starters').append(b);
   }
   for (const s of recent) {
@@ -954,7 +958,8 @@ async function pickDir(start, done) {
   const go = async p => {
     let r; try { r = await api('GET', `/api/fs?path=${encodeURIComponent(p)}${hidden ? '&hidden=1' : ''}`); } catch (e) { return toast(e.message); }
     cur = r.path;
-    sheet(`<h3>Choose folder</h3><div class="path">${esc(short(r.path))}</div><div class="rowbtns"><button class="secondary" data-a="hid">${hidden ? 'Hide' : 'Show'} hidden</button><button class="primary" data-a="use">Use this folder</button></div><h4>Folders</h4><div class="rows">${r.path !== '/' ? `<button data-a="up">${I.up}<span>..</span></button>` : ''}${r.dirs.map((d, i) => `<button data-a="d" data-i="${i}">${I.folder}<span>${esc(d)}</span></button>`).join('') || '<div class="hint" style="padding:14px 16px;margin:0">No subfolders</div>'}</div>`, {
+    sheet(`<h3>Choose folder</h3><div class="path">${esc(short(r.path))}</div><div class="rowbtns"><button class="secondary" data-a="hid">${hidden ? 'Hide' : 'Show'} hidden</button><button class="primary" data-a="use">Use this folder</button></div><h4>Folders</h4><div class="rows">${settings().standalone && !r.path.startsWith('/storage/emulated/0') ? `<button data-a="phone">${I.folder}<span>Phone storage</span></button>` : ''}${r.path !== '/' ? `<button data-a="up">${I.up}<span>..</span></button>` : ''}${r.dirs.map((d, i) => `<button data-a="d" data-i="${i}">${I.folder}<span>${esc(d)}</span></button>`).join('') || '<div class="hint" style="padding:14px 16px;margin:0">No subfolders</div>'}</div>`, {
+      phone: () => settings().allFiles ? go('/storage/emulated/0') : toast('Allow all files in Settings first'),
       up: () => go(r.parent), d: el => go(r.path.replace(/\/$/, '') + '/' + r.dirs[+el.dataset.i]),
       hid: () => { hidden = !hidden; go(cur); }, use: () => { closeSheet(); done(cur); },
     });
@@ -972,23 +977,30 @@ function pairTermux(cb) {
 async function settingsSheet() {
   const c = settings();
   const key = S.health?.hasKey;
+  const sa = !!c.standalone, bi = sa && c.backend === 'builtin';
   const b = sheet(`<h3>Settings</h3>
-    <h4>Backend</h4>
+    <h4>Backend</h4>${sa ? seg('backend', [['builtin', 'Built in'], ['termux', 'Termux']], c.backend) : ''}
+    ${bi ? `<div class="kvs" style="margin-top:12px"><div class="kv"><span>dsh</span><b>${S.health ? esc(S.health.version) + ' in this app' : 'Not running'}</b></div><div class="kv"><span>Files</span><b>${c.allFiles ? 'All files allowed' : 'App storage only'}</b></div></div>
+    <div class="rowbtns"><button class="secondary" data-a="restart">${I.retry}Restart dsh</button>${c.allFiles ? '' : '<button class="secondary" data-a="files">Allow all files</button>'}</div>
+    <p class="hint">dsh runs inside DSHA with Android's own shell: no git, Python or packages. Switch to Termux for a full Linux toolbox.</p>` : `${sa ? '<div style="height:12px"></div>' : ''}
     <button class="primary wide" data-a="pair">${I.link}Pair with dsh in Termux</button>
     <p class="hint">Starts <code>dsh</code> in Termux and fetches its token. First time, Android asks to let DSHA run Termux commands.</p>
     <label class="field"><span>URL</span><input id="fUrl" value="${esc(c.url)}" autocapitalize="off" spellcheck="false"></label>
     <label class="field"><span>Token (<code>dsh token</code>)</span><input id="fTok" type="password" value="${esc(c.token)}" autocapitalize="off" spellcheck="false"></label>
     <button class="secondary wide" data-a="save">Save and reconnect</button>
-    <div class="err-text" id="pairErr"></div>
+    <div class="err-text" id="pairErr"></div>`}
     <h4>Appearance</h4>${seg('theme', [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']], local.get('theme') || 'system')}
     <h4>DeepSeek API key</h4>
     <div class="kvs"><div class="kv"><span>Status</span><b>${key ? 'Set on backend' : 'Not set'}</b></div><div class="kv"><span>Balance</span><b id="bal">${esc(S.balance || '…')}</b></div></div>
     <label class="field" style="margin-top:14px"><span>Replace key</span><input id="fKey" type="password" placeholder="sk-…" autocapitalize="off" spellcheck="false"></label>
-    <button class="secondary wide" data-a="key">Verify and save key</button><p class="hint">Stored only on the backend, in <code>~/.config/deepseek/key</code>.</p>
+    <button class="secondary wide" data-a="key">Verify and save key</button><p class="hint">${bi ? 'Stored only inside this app.' : 'Stored only on the backend, in <code>~/.config/deepseek/key</code>.'}</p>
     <h4>Defaults for new sessions</h4>
     <div class="rows"><button data-a="defs">${I.gear}<span>${esc(S.cfg ? `${modelName(S.cfg.model)} · ${S.cfg.thinking === false ? 'no thinking' : S.cfg.effort + ' thinking'} · ${MODES[S.cfg.mode]?.[0] || S.cfg.mode}` : 'Unknown')}</span></button><button data-a="dcwd">${I.folder}<span>${esc(short(S.cfg?.cwd || ''))}</span></button></div>
     ${N ? `<h4>Notifications</h4><button class="secondary wide" data-a="notif">Allow notifications</button><p class="hint">Get notified when a run finishes or needs approval while DSHA is in the background.</p>` : ''}
     <h4>About</h4><div class="kvs"><div class="kv"><span>DSHA</span><b>${esc(c.version)}</b></div><div class="kv"><span>dsh</span><b>${esc(S.health?.version || 'Not connected')}</b></div></div><div class="rows" style="margin-top:10px"><button data-a="agent">${I.book}<span>Plugins, skills and instructions</span></button><button data-a="lic">${I.file}<span>Third-party licences</span></button></div>`, {
+    backend: el => { if (el.dataset.v === c.backend) return; haptic(); N?.setBackend(el.dataset.v); closeSheet(); S.cur = null; boot(); },
+    restart: () => { haptic(); N?.restartBackend(); closeSheet(); toast('Restarting dsh'); setTimeout(boot, 2500); },
+    files: () => N?.askAllFiles(),
     theme: el => { local.set('theme', el.dataset.v); applyTheme(); b.querySelectorAll('[data-a=theme]').forEach(x => x.classList.toggle('on', x === el)); },
     pair: el => { el.disabled = true; $('#pairErr').textContent = ''; pairTermux((ok, err) => { el.disabled = false; if (ok) { toast('Paired'); closeSheet(); boot(); } else $('#pairErr').textContent = err; }); },
     save: () => { saveSettings($('#fUrl').value.trim().replace(/\/+$/, ''), $('#fTok').value.trim()); closeSheet(); boot(); },
@@ -1002,6 +1014,39 @@ async function settingsSheet() {
   refreshBalance(true);
 }
 
+/* ---------- Standalone first run: dsh starting inside the app, then the DeepSeek key ---------- */
+let startTries = 0;
+function startingUp(err) {
+  // First start unpacks dsh and boots Node; give it about 15 s before calling it a failure.
+  if (startTries++ < 20) { onboardScreen('Starting dsh…', 'The agent runs inside this app. The first start takes a few seconds.'); setTimeout(boot, 750); return; }
+  startTries = 0;
+  const logTail = N?.backendLog?.() || '';
+  onboardScreen("dsh didn't start", err || 'No answer from the built-in backend.', `<button class="primary wide" id="obRestart">${I.retry}Restart dsh</button>${logTail ? `<pre class="oblog">${esc(logTail.slice(-1500))}</pre>` : ''}<button class="secondary wide" id="obTermux">Use dsh in Termux instead</button>`);
+  $('#obRestart').onclick = () => { haptic(); N?.restartBackend(); setTimeout(boot, 2000); onboardScreen('Restarting dsh…', ''); };
+  $('#obTermux').onclick = () => { haptic(); N?.setBackend('termux'); boot(); };
+}
+function onboardScreen(title, text, more = '') {
+  log.textContent = ''; S.items = [];
+  const e = $('#empty'); e.hidden = false;
+  e.innerHTML = `<div class="onboard">${MARK.replace('class="mark"', 'class="mark big"')}<h2>${esc(title)}</h2>${text ? `<p>${esc(text)}</p>` : ''}${more}</div>`;
+  header(); conn(false);
+}
+function keyScreen(e) {
+  e.innerHTML = `<div class="onboard">${MARK.replace('class="mark"', 'class="mark big"')}<h2>Add your DeepSeek key</h2>
+    <p>dsh works through your own DeepSeek account. Create an API key and add a few dollars of balance, then paste the key here. It stays inside this app.</p>
+    <a class="secondary wide oblink" href="https://platform.deepseek.com/api_keys">${I.link}Open platform.deepseek.com</a>
+    <label class="field"><span>API key</span><input id="obKey" type="password" placeholder="sk-…" autocapitalize="off" autocomplete="off" spellcheck="false"></label>
+    <button class="primary wide" id="obKeySave">Verify and save</button><div class="err-text" id="obKeyErr"></div></div>`;
+  const save = async () => {
+    const k = $('#obKey').value.trim(), b = $('#obKeySave'); if (!k) return;
+    b.disabled = true; $('#obKeyErr').textContent = '';
+    try { await api('PUT', '/api/key', { key: k }); S.health = await api('GET', '/api/health'); haptic(); toast('Key saved'); refreshBalance(true); emptyState(); }
+    catch (er) { $('#obKeyErr').textContent = er.message; b.disabled = false; }
+  };
+  $('#obKeySave').onclick = save;
+  $('#obKey').onkeydown = ev => { if (ev.key === 'Enter') save(); };
+}
+
 function onboarding(err) {
   log.textContent = ''; S.items = [];
   const e = $('#empty'); e.hidden = false;
@@ -1012,6 +1057,7 @@ function onboarding(err) {
   <button class="secondary wide" id="obSet">${I.gear}Settings</button></div>`;
   $('#obPair').onclick = () => { $('#obPair').disabled = true; pairTermux((ok, er) => { $('#obPair').disabled = false; if (ok) boot(); else $('#obErr').textContent = er; }); };
   $('#obSet').onclick = settingsSheet;
+  if (settings().standalone) { const b = h('button', 'secondary wide', 'Use the built-in dsh'); b.onclick = () => { haptic(); N?.setBackend('builtin'); boot(); }; $('#obSet').after(b); }
   header(); conn(false);
 }
 
@@ -1020,17 +1066,20 @@ async function boot() {
     S.health = await api('GET', '/api/health');
     S.cfg = await api('GET', '/api/config');
   } catch (e) {
+    if (builtin()) return startingUp(e.message);
     return onboarding(settings().token ? e.message : '');
   }
-  conn(true); header(); refreshBalance(true);
+  startTries = 0; conn(true); header(); refreshBalance(true);
   api('GET', '/api/models').then(r => { S.models = r.data; }).catch(() => {});
   await refreshSessions();
+  // Standalone without a key: nothing works yet, so the key screen comes before any session.
+  if (builtin() && !S.health.hasKey) { S.cur = null; fromMessages([]); header(); meter(); emptyState(); return; }
   const lastId = local.get('last');
   const pick = S.sessions.find(x => x.id === lastId) || S.sessions[0];
   if (pick && Date.now() - pick.updated < 6 * 3600e3) await load(pick.id).catch(() => { S.cur = null; });
   else { S.cur = null; fromMessages([]); header(); meter(); }
   emptyState();
-  if (!S.health.hasKey) { add({ kind: 'notice', err: true, text: 'No DeepSeek API key on the backend yet. Add one in Settings.' }); emptyState(); }
+  if (!S.health.hasKey && !builtin()) { add({ kind: 'notice', err: true, text: 'No DeepSeek API key on the backend yet. Add one in Settings.' }); emptyState(); }
 }
 
 /* ---------- subagents sidebar ---------- */

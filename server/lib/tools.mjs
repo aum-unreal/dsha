@@ -10,7 +10,38 @@ import { listSessions, loadSession } from './store.mjs';
 
 const MAX_OUT = 30000;
 const PREFIX = process.env.PREFIX || '/usr';
-const RG = [PREFIX + '/bin/rg', '/usr/bin/rg'].find(p => existsSync(p)) || 'rg';
+// ripgrep when there is one (Termux, desktops). DSHA Standalone runs in Android's app sandbox,
+// which has none: grep and glob then walk the tree in Node (DSH_NO_RG forces that for tests).
+const RG = process.env.DSH_NO_RG ? null : [PREFIX + '/bin/rg', '/usr/bin/rg', ...(process.env.PATH || '').split(':').filter(Boolean).map(d => d + '/rg')].find(p => existsSync(p)) || null;
+const SKIP = new Set(['.git', 'node_modules', '.hg', '.svn', '.gradle', 'build', 'dist']);
+async function* walk(p, signal) {
+  const st = await fs.stat(p).catch(() => null); if (!st) return;
+  if (st.isFile()) { yield p; return; }
+  for (const e of await fs.readdir(p, { withFileTypes: true }).catch(() => [])) {
+    if (signal?.aborted) return;
+    const f = path.join(p, e.name);
+    if (e.isDirectory()) { if (!SKIP.has(e.name)) yield* walk(f, signal); } else if (e.isFile()) yield f;
+  }
+}
+// rg -g semantics: a pattern without a slash matches the file name anywhere, one with a slash the path from the root.
+const globHit = (root, f, g) => path.matchesGlob(g.includes('/') ? path.relative(root, f) : path.basename(f), g);
+async function nodeGrep(a, ctx) {
+  const re = new RegExp(a.pattern, a.ignore_case ? 'i' : ''), root = resolve(ctx, a.path), out = [];
+  for await (const f of walk(root, ctx.signal)) {
+    if (a.glob && !globHit(root, f, a.glob)) continue;
+    const st = await fs.stat(f).catch(() => null); if (!st || st.size > 2e6) continue;
+    const buf = await fs.readFile(f).catch(() => null); if (!buf || buf.subarray(0, 8000).includes(0)) continue;
+    let n = 0;
+    for (const [i, line] of buf.toString('utf8').split('\n').entries()) if (re.test(line)) { out.push(`${f}:${i + 1}:${line.slice(0, 500)}`); if (++n >= 200) break; }
+    if (out.length >= 2000) break;
+  }
+  return out.join('\n');
+}
+async function nodeGlob(a, ctx) {
+  const root = resolve(ctx, a.path), out = [];
+  for await (const f of walk(root, ctx.signal)) if (globHit(root, f, a.pattern) && out.push(f) >= 500) break;
+  return out.join('\n');
+}
 
 export function clip(s, max = MAX_OUT) {
   s = String(s ?? '');
@@ -26,7 +57,9 @@ function resolve(ctx, p) {
 }
 
 // Runs a command in its own process group so stop/timeout kills the whole tree.
-export function sh(command, { cwd, timeout = 120, signal, onData, shell = process.env.SHELL || PREFIX + '/bin/bash' } = {}) {
+// $SHELL, else bash, else Android's sh (DSHA Standalone sets SHELL, but nothing should hang on it).
+const DEFAULT_SHELL = process.env.SHELL || [PREFIX + '/bin/bash', '/bin/bash', '/system/bin/sh'].find(p => existsSync(p)) || '/bin/sh';
+export function sh(command, { cwd, timeout = 120, signal, onData, shell = DEFAULT_SHELL } = {}) {
   return new Promise(res => {
     let out = '', done = false, killed = '';
     const p = spawn(shell, ['-c', command], { cwd, detached: true, env: { ...process.env, TERM: 'dumb', PAGER: 'cat', GIT_PAGER: 'cat' }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -113,6 +146,7 @@ export const TOOLS = {
     description: 'Search file contents with ripgrep (regex). Respects .gitignore.',
     parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string' }, glob: { type: 'string', description: 'e.g. *.js' }, ignore_case: { type: 'boolean' } }, required: ['pattern'] },
     async run(a, ctx) {
+      if (!RG) return clip(await nodeGrep(a, ctx) || 'No matches.');
       const q = s => `'${String(s).replace(/'/g, `'\\''`)}'`;
       const cmd = `${RG} -n --no-heading --color never -m 200 ${a.ignore_case ? '-i ' : ''}${a.glob ? '-g ' + q(a.glob) + ' ' : ''}-e ${q(a.pattern)} ${q(resolve(ctx, a.path))}`;
       const r = await sh(cmd, { cwd: ctx.cwd, timeout: 60, signal: ctx.signal });
@@ -124,6 +158,7 @@ export const TOOLS = {
     description: 'Find files by glob pattern (e.g. **/*.kt) under a path. Respects .gitignore.',
     parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string' } }, required: ['pattern'] },
     async run(a, ctx) {
+      if (!RG) return clip(await nodeGlob(a, ctx) || 'No files.');
       const q = s => `'${String(s).replace(/'/g, `'\\''`)}'`;
       const r = await sh(`${RG} --files -g ${q(a.pattern)} ${q(resolve(ctx, a.path))} | head -500`, { cwd: ctx.cwd, timeout: 60, signal: ctx.signal });
       return clip(r.out || 'No files.');

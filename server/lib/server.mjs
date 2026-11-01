@@ -14,7 +14,7 @@ import { systemPrompt } from './agent.mjs';
 import { listAgents, readAgent, saveAgent, setAgent, setClaudeAgents, deleteAgent } from './agents.mjs';
 import { TOOLS } from './tools.mjs';
 
-export const VERSION = '0.7.0';
+export const VERSION = '0.8.0';
 
 export function createServer({ config = loadConfig } = {}) {
   let cfg = config();
@@ -28,7 +28,7 @@ export function createServer({ config = loadConfig } = {}) {
     return { ...listAgents(cwd), tools };
   };
   const routes = [
-    ['GET', /^\/api\/health$/, () => ({ ok: true, version: VERSION, hasKey: !!readKey(), model: cfg.model, home: HOME, running: activeRuns(), tempRoots: TEMP_ROOTS, userHome: USER_HOME, api: apiState })],
+    ['GET', /^\/api\/health$/, () => ({ ok: true, version: VERSION, standalone: !!process.env.DSH_STANDALONE, hasKey: !!readKey(), model: cfg.model, home: HOME, running: activeRuns(), tempRoots: TEMP_ROOTS, userHome: USER_HOME, api: apiState })],
     ['GET', /^\/api\/config$/, () => pub(cfg)],
     ['PUT', /^\/api\/config$/, (_, b) => {
       const p = pick(b, ['model', 'effort', 'mode', 'thinking', 'maxSteps', 'cwd', 'base']);

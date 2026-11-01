@@ -533,3 +533,9 @@ body.wide #agside { display: none; }
 .msg.user.queued .qx:active { background: var(--active); color: var(--text); }
 .msg.user.queued .qx svg { width: 14px; height: 14px; }
 .msg.user.steer::before { content: "Sent during the run"; display: block; font-size: 12px; line-height: 16px; color: var(--faint); margin-bottom: 2px; }
+
+/* ---------- Standalone first run ---------- */
+.onboard .oblink { display: flex; text-decoration: none; color: var(--text); background: var(--surface); margin-bottom: 14px; }
+.onboard .oblog { text-align: left; margin: 14px 0; max-height: 30vh; }
+.onboard .field { text-align: left; }
+.onboard > .secondary.wide { margin-top: 10px; }

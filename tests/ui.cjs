@@ -480,6 +480,32 @@ const stat = http.createServer((req, res) => {
     await page.getByRole('button', { name: 'Learn from session' }).click();
     assert.equal(await page.locator('#page').isVisible(), false);
     assert.equal(await page.locator('#input').inputValue(), 'Use the dsh-evolve skill on this session.');
+
+    // DSHA Standalone (?standalone=1 in a browser): no Termux pairing; with no key yet the empty
+    // state is the key screen, the key goes to dsh, and Settings offers Built in / Termux and a restart.
+    const sa = await ctx.newPage();
+    sa.on('pageerror', e => errors.push(e.message));
+    let noKey = true;
+    await sa.route('**/api/health', async r => { const res = await r.fetch(); const j = await res.json(); if (noKey) j.hasKey = false; r.fulfill({ response: res, json: j }); });
+    await sa.setViewportSize({ width: 360, height: 780 });
+    await sa.goto(`http://127.0.0.1:${STATIC}/?standalone=1`);
+    await sa.getByRole('heading', { name: 'Add your DeepSeek key' }).waitFor();
+    assert.equal(await sa.locator('#obPair').count(), 0, 'no Termux pairing in Standalone');
+    await sa.waitForTimeout(200); await sa.screenshot({ path: shot('standalone-key') });
+    await sa.locator('#obKey').fill('nonsense');
+    await sa.locator('#obKeySave').click();
+    await sa.locator('#obKeyErr', { hasText: 'does not look like a DeepSeek key' }).waitFor();
+    noKey = false;
+    await sa.locator('#obKey').fill('sk-test-0123456789');
+    await sa.locator('#obKeySave').click();
+    await sa.getByRole('heading', { name: 'What should dsh do?' }).waitFor();
+    assert.equal(await sa.locator('#starters button', { hasText: 'Build a small to-do web page' }).count(), 1);
+    await sa.locator('#menuBtn').click(); await sa.locator('#settingsBtn').click();
+    await sa.locator('#sheet .seg [data-v=builtin].on').waitFor();
+    assert.match(await sa.locator('#sheet .kvs').first().textContent(), /in this app.*App storage only/s);
+    assert.equal(await sa.locator('#sheet [data-a=pair]').count(), 0);
+    await sa.waitForTimeout(250); await sa.screenshot({ path: shot('standalone-settings') });
+    await sa.close();
     assert.deepEqual(errors, []);
     console.log('ui ok');
   } finally {

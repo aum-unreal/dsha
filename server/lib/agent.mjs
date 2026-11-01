@@ -32,15 +32,18 @@ export function runtime(id, deps) {
 export const dropRuntime = id => { runtimes.get(id)?.stop(); runtimes.delete(id); };
 export const activeRuns = () => [...runtimes.values()].filter(r => r.running).map(r => r.s.id);
 
+// What the Android app sandbox offers (checked on a Galaxy Z Fold, Android 15): toybox, no package manager.
+const SANDBOX = `The shell is Android's /system/bin/sh with toybox: ls, cat, grep, sed, awk, find, xargs, tar, gzip, diff, curl and the like. There is no git, python, bash or package manager; node (Node ${process.versions.node.split('.')[0]}) is on PATH for scripts and small servers. ~ is this app's private storage (projects in ~/projects); the phone's shared storage is /storage/emulated/0, readable only if the user allowed all-files access in Settings. The user can switch DSHA to Termux for a full Linux environment.`;
 export function systemPrompt(s, mcp = '') {
   const files = contextFiles(s.cwd), skills = skillPrompt(s.cwd), memory = memoryPrompt(), agents = agentPrompt(s.cwd);
-  return `You are dsh, a coding and operations agent running on the user's own machine (${os.platform()} ${os.arch()}${process.env.PREFIX ? ', Termux on Android' : ''}) and talking to them through the DSHA phone app.
+  const standalone = !!process.env.DSH_STANDALONE;
+  return `You are dsh, a coding and operations agent running on the user's own machine (${os.platform()} ${os.arch()}${standalone ? ', inside the DSHA Standalone app on Android, no Termux' : process.env.PREFIX ? ', Termux on Android' : ''}) and talking to them through the DSHA phone app.
 Working directory: ${s.cwd}
 Date: ${new Date().toISOString().slice(0, 10)}
 
 How to work:
 - Use the tools to inspect before you change things. Read a file before editing it; prefer edit_file over rewriting whole files.
-- Paths are relative to the working directory unless absolute. The shell is bash; Termux binaries live in $PREFIX/bin.
+- Paths are relative to the working directory unless absolute. ${standalone ? SANDBOX : 'The shell is bash; Termux binaries live in $PREFIX/bin.'}
 - Keep the user informed in short prose. Final answers: concise, Markdown, lead with the result. On a phone screen, avoid wide tables.
 - For multi-step tasks keep a todo list with todo_write.
 - Tool calls may be denied by the user; if so, don't retry the same call — adjust or ask.

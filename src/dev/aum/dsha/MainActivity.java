@@ -33,6 +33,9 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
     private boolean previewCanBack;
     private FrameLayout root;
     private SharedPreferences prefs;
+    // DSHA Standalone carries its own dsh (see Backend); "backend" = builtin or termux picks which one the UI talks to.
+    private boolean standalone;
+    private boolean builtin() { return standalone && !"termux".equals(prefs.getString("backend", "builtin")); }
     private final ExecutorService pool = Executors.newCachedThreadPool();
     private final Map<String, HttpURLConnection> streams = new ConcurrentHashMap<>();
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -66,6 +69,8 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = getSharedPreferences("dsha", MODE_PRIVATE);
+        standalone = Backend.available(this);
+        if (builtin()) { try { Backend.install(this); } catch (Exception e) { android.util.Log.e("DSHA", "dsh unpack failed", e); } Backend.start(this); }
         root = new FrameLayout(this);
         root.setBackgroundColor(0xff000000);
         root.setOnApplyWindowInsetsListener((v, insets) -> {
@@ -111,7 +116,7 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
 
     @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); handleIntent(i); }
     @Override protected void onResume() {
-        super.onResume(); visible = true; if (preview != null) preview.onResume(); js("window.native&&native.resume&&native.resume()");
+        super.onResume(); visible = true; if (builtin() && !Backend.running()) Backend.start(this); if (preview != null) preview.onResume(); js("window.native&&native.resume&&native.resume()");
         if (hinge != null) sensors.registerListener(this, hinge, android.hardware.SensorManager.SENSOR_DELAY_UI);
         sendPosture(true);
     }
@@ -202,8 +207,8 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         return ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) && u.getHost() != null;
     }
 
-    private String base() { return prefs.getString("url", "http://127.0.0.1:8787").replaceAll("/+$", ""); }
-    private String token() { return prefs.getString("token", ""); }
+    private String base() { return builtin() ? Backend.url() : prefs.getString("url", "http://127.0.0.1:8787").replaceAll("/+$", ""); }
+    private String token() { return builtin() ? Backend.token(this) : prefs.getString("token", ""); }
 
     private HttpURLConnection open(String method, String path) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(base() + path).openConnection();
@@ -245,7 +250,8 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         String err = r == null ? "no result from Termux" : String.valueOf(r.getString("stderr", "")).trim() + " " + String.valueOf(r.getString("errmsg", "")).replace("null", "").trim();
         String tok = out.isEmpty() ? "" : out.substring(out.lastIndexOf('\n') + 1).trim();
         if (tok.matches("[A-Za-z0-9_-]{16,}")) {
-            prefs.edit().putString("token", tok).putString("url", "http://127.0.0.1:8787").apply();
+            prefs.edit().putString("token", tok).putString("url", "http://127.0.0.1:8787").putString("backend", "termux").apply();
+            if (standalone) Backend.stop(this);
             js("native.paired(true,null)");
         } else js("native.paired(null," + JSONObject.quote(err.trim().isEmpty() ? "Termux returned no token. Is dsh installed? (" + out + ")" : err.trim()) + ")");
     }
@@ -271,9 +277,30 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
     class Bridge {
         @JavascriptInterface public void ready() { ready = true; main.post(() -> { deliverShare(); sendPosture(true); }); }
         @JavascriptInterface public String settings() {
-            try { return new JSONObject().put("url", base()).put("token", token()).put("version", BuildConfigVersion()).toString(); } catch (JSONException e) { return "{}"; }
+            try {
+                return new JSONObject().put("url", base()).put("token", token()).put("version", BuildConfigVersion())
+                    .put("standalone", standalone).put("backend", builtin() ? "builtin" : "termux").put("running", Backend.running())
+                    .put("allFiles", Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()).toString();
+            } catch (JSONException e) { return "{}"; }
         }
-        @JavascriptInterface public void saveSettings(String url, String tok) { prefs.edit().putString("url", url.trim()).putString("token", tok.trim()).apply(); }
+        // Standalone only: switch between the built-in dsh and one in Termux, restart it, read its log, grant file access.
+        @JavascriptInterface public void setBackend(String b) {
+            if (!standalone) return;
+            prefs.edit().putString("backend", "termux".equals(b) ? "termux" : "builtin").apply();
+            if (builtin()) { try { Backend.install(MainActivity.this); } catch (Exception ignored) {} Backend.start(MainActivity.this); } else Backend.stop(MainActivity.this);
+        }
+        @JavascriptInterface public void restartBackend() {
+            if (!builtin()) return;
+            Backend.stop(MainActivity.this);
+            main.postDelayed(() -> Backend.start(MainActivity.this), 1500);
+        }
+        @JavascriptInterface public String backendLog() { return Backend.tail(new File(getFilesDir(), ".dsh/dsh.log"), 3000); }
+        @JavascriptInterface public void askAllFiles() {
+            if (Build.VERSION.SDK_INT < 30) return;
+            main.post(() -> { try { startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName()))); }
+                catch (Exception e) { startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)); } });
+        }
+        @JavascriptInterface public void saveSettings(String url, String tok) { SharedPreferences.Editor e = prefs.edit().putString("url", url.trim()).putString("token", tok.trim()); if (standalone) { e.putString("backend", "termux"); Backend.stop(MainActivity.this); } e.apply(); }
         @JavascriptInterface public void pairTermux() { main.post(MainActivity.this::pair); }
         @JavascriptInterface public void theme(boolean dark) { main.post(() -> applyBars(dark)); }
 
