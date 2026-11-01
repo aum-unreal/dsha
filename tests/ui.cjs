@@ -351,6 +351,36 @@ const stat = http.createServer((req, res) => {
     assert.equal(await page.locator('.tool.agentcard').last().locator('.subs > .tool.sub').count(), 2, 'subagent steps survive a reload');
     assert.match(await page.locator('.tool.agentcard').last().locator('.subs .tn').first().textContent(), /List folder/);
 
+    // Subagents sidebar: folded, the top-bar button opens a panel from the right with dsh's tree;
+    // a row opens that agent's detail. Unfolded, the same body is the Inspector's Agents tab.
+    await page.locator('#agentsBtn').click();
+    await page.locator('#agside .agrow').first().waitFor();
+    assert.equal(await page.locator('#agside .agrow').count(), 1);
+    assert.match(await page.locator('#agside .agrow .r1').textContent(), /Surveyor/);
+    assert.match(await page.locator('#agside .agrow .agst').textContent(), /Done/); assert.match(await page.locator('#agside .agrow .r3').textContent(), /2 tools/);
+    await page.waitForTimeout(300); await page.screenshot({ path: shot('agents-side') });
+    await page.locator('#agside .agrow').click();
+    await page.locator('#agside .agdhead h2', { hasText: 'Surveyor' }).waitFor();
+    assert.match(await page.locator('#agside .agtext').first().textContent(), /List the files/);
+    assert.equal(await page.locator('#agside .agstep').count(), 2);
+    assert.match(await page.locator('#agside .agreport').textContent(), /A README and src/);
+    assert.match(await page.locator('#agside .agkv').textContent(), /2 in|in ·/, 'token counts survive the reload');
+    await page.locator('#agside .agstep button').first().click();
+    await page.locator('#agside .agstep .ipre').waitFor();
+    await page.waitForTimeout(200); await page.screenshot({ path: shot('agent-detail') });
+    assert.ok(await page.evaluate(() => window.native.back()), 'back leaves the detail');
+    await page.locator('#agside .agrow').waitFor();
+    assert.ok(await page.evaluate(() => window.native.back()), 'back closes the panel');
+    assert.ok(await page.evaluate(() => !document.body.classList.contains('agside')));
+    await page.setViewportSize({ width: 748, height: 880 }); await page.evaluate(() => window.native.posture(180, 374, 440)); await page.waitForTimeout(250);
+    await page.locator('.tool.agentcard > .head').last().click();
+    await page.locator('#ibody .agdhead h2', { hasText: 'Surveyor' }).waitFor();
+    assert.equal(await page.locator('#itabs [data-t=agents]').getAttribute('aria-selected'), 'true');
+    await page.waitForTimeout(250); await page.screenshot({ path: shot('unfolded-agents') });
+    await page.locator('#ibody [data-agback]').click(); await page.locator('#ibody .agrow').waitFor();
+    await page.locator('#itabs [data-t=activity]').click();
+    await page.setViewportSize({ width: 360, height: 780 }); await page.evaluate(() => window.native.posture(0, 180, 390)); await page.waitForTimeout(250);
+
     // Agent setup page: subagents first, then plugins, skills, instruction files.
     await page.getByRole('button', { name: 'Sessions' }).click(); await page.waitForTimeout(250);
     await page.locator('#agentBtn').click();

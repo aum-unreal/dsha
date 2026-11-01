@@ -19,11 +19,13 @@ const I = {
   arrow: svg('<path d="M5 12h14M13 6l6 6-6 6"/>'), activity: svg('<path d="M3 12h4l3-8 4 16 3-8h4"/>'), chart: svg('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'), fold: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>'),
   circle: svg('<circle cx="12" cy="12" r="7"/>'), half: svg('<circle cx="12" cy="12" r="7"/><path d="M12 5a7 7 0 0 1 0 14z" fill="currentColor"/>'),
   expand: svg('<path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/>'), shrink: svg('<path d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5"/>'),
-  agents: svg('<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M6 8.5v1a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3v-1M12 12.5v3"/>'),
+  agents: svg('<circle cx="5" cy="12" r="2"/><path d="M7 12h4c2.6 0 3.4-5.5 8-5.5M11 12c2.6 0 3.4 5.5 8 5.5"/>'),
   book: svg('<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 21V5M8 7h7"/>'), back: svg('<path d="M15 6l-6 6 6 6"/>'),
   share: svg('<path d="M12 3v13M7 8l5-5 5 5"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/>'), trash: svg('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'), link: svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
 };
-const MARK = '<svg class="mark" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="6" fill="#fff" stroke="none"/><path d="M6.5 13c1.8-3.4 3.7-3.4 5.5 0s3.7 3.4 5.5 0" stroke="#000" stroke-width="2.2"/></svg>';
+// The mark: dsh's root node, in the one hue, forking into two lines, its subagents. The agents icon,
+// the sidebar's tree and the launcher icon are drawn from the same fork.
+const MARK = '<svg class="mark" viewBox="0 0 24 24"><rect x="1" y="1" width="22" height="22" rx="6.5"/><path d="M6.4 12h4.4c2.7 0 3.6-5.3 7.6-5.3M10.8 12c2.7 0 3.6 5.3 7.6 5.3"/><circle cx="6.2" cy="12" r="2.3"/></svg>';
 const TOOL_NAME = { bash: 'Shell', read_file: 'Read file', write_file: 'Write file', edit_file: 'Edit file', list_dir: 'List folder', grep: 'Search', glob: 'Find files', web_fetch: 'Fetch', todo_write: 'Task list', skill: 'Skill', session_log: 'Session log', preview: 'Preview', agent: 'Agent' };
 const tname = n => TOOL_NAME[n] || n.replace(/_/g, ' ');
 const TODO_ICON = { completed: I.check, in_progress: I.half, pending: I.circle };
@@ -40,7 +42,7 @@ window.native = {
   end(id, err) { const s = streams.get(id); streams.delete(id); s?.end(err); },
   paired(ok, err) { pairDone?.(ok, err); },
   shared(t) { sharedText(t); },
-  back() { if (previewShown() && previewUrl && window.Native?.previewBack?.()) return true; if (document.body.classList.contains('sheet')) { closeSheet(); return true; } if (document.body.classList.contains('paged')) { closePage(); return true; } if (document.body.classList.contains('drawer')) { drawer(false); return true; } return false; },
+  back() { if (previewShown() && previewUrl && window.Native?.previewBack?.()) return true; if (document.body.classList.contains('sheet')) { closeSheet(); return true; } if (document.body.classList.contains('agside')) { if (agView.sel) { agView.sel = null; renderAgents($('#agsideBody'), true); } else agSide(false); return true; } if (document.body.classList.contains('paged')) { closePage(); return true; } if (document.body.classList.contains('drawer')) { drawer(false); return true; } return false; },
   resume() { if (S.cur) resync(); refreshSessions(); },
 };
 const local = { get: k => { try { return localStorage.getItem('dsha.' + k) || ''; } catch { return ''; } }, set: (k, v) => { try { localStorage.setItem('dsha.' + k, v); } catch {} } };
@@ -118,7 +120,7 @@ function build(it) {
       e.querySelector('.head').onclick = () => { haptic(); if (layout.mode === 'wide') { if (chatFull) setChatFull(false); S.sel = S.sel === it.id ? null : it.id; S.itab = 'activity'; for (const t of S.items) if (t.kind === 'tool') t.el.classList.toggle('sel', t.id === S.sel); ui(); } else e.classList.toggle('open'); };
       for (const d of ['allow', 'always', 'deny']) e.querySelector('.' + d).onclick = () => decide(it, d);
       // A subagent's card holds its own steps, always in view so a long delegation shows its progress.
-      if (it.name === 'agent') { e.classList.add('agentcard'); it.subsEl = h('div', 'subs'); e.querySelector('.ask').before(it.subsEl); it.nTools ??= 0; }
+      if (it.name === 'agent') { e.classList.add('agentcard'); it.subsEl = h('div', 'subs'); e.querySelector('.ask').before(it.subsEl); it.nTools ??= 0; e.querySelector('.head').onclick = () => openAgents(it.id); }
       if (it.parent) e.classList.add('sub');
       return e;
     }
@@ -163,6 +165,7 @@ function paint(it) {
     case 'tool': {
       e.className = 'tool ' + (it.subsEl ? 'agentcard ' : '') + (it.parent ? 'sub ' : '') + (it.status || 'run') + (e.classList.contains('open') ? ' open' : '') + (S.sel === it.id ? ' sel' : '');
       e.querySelector('.tn').textContent = it.name === 'agent' ? agentLabel(it) : tname(it.name);
+      if (it.subsEl) { const m = agMono(it); if (e.dataset.mono !== m) { e.dataset.mono = m; e.querySelector('.ti').innerHTML = m; } }
       e.querySelector('.ts').textContent = it.name === 'agent' ? it.args?.description || '' : it.summary || '';
       e.querySelector('.ts').classList.toggle('plain', it.name === 'todo_write');
       e.querySelector('.st').textContent = statusText(it);
@@ -199,7 +202,7 @@ function closeLive() {
 }
 
 function fromMessages(msgs, meta = {}) {
-  log.textContent = ''; S.items = [];
+  log.textContent = ''; S.items = []; agHue.clear(); agView.sel = null; agView.open.clear();
   const tools = {}; let turn = 0;
   msgs.forEach((m, i) => {
     if (m.role === 'user') add({ kind: 'user', text: m.content, turn: turn++ });
@@ -214,7 +217,7 @@ function fromMessages(msgs, meta = {}) {
       }
     } else if (m.role === 'tool' && tools[m.tool_call_id]) {
       const t = tools[m.tool_call_id], mm = meta[m.tool_call_id] || {};
-      Object.assign(t, { content: clipText(m.content), status: mm.denied ? 'denied' : mm.ok === false ? 'fail' : 'ok', ms: mm.ms }, mm.agent ? { agent: mm.agent } : {}); paint(t);
+      Object.assign(t, { content: clipText(m.content), status: mm.denied ? 'denied' : mm.ok === false ? 'fail' : 'ok', ms: mm.ms }, mm.agent ? { agent: mm.agent, stats: { model: mm.model, steps: mm.steps, in: mm.in, out: mm.out } } : {}); paint(t);
     }
   });
   addFoot();
@@ -256,7 +259,7 @@ function apply(ev) {
     case 'approval': { const t = tool(ev.id); if (t) { t.status = 'waiting'; paint(t); stick = true; } haptic(); if (!visible()) N?.notify('dsh needs approval', `${ev.name}: ${String(ev.summary).slice(0, 200)}`); break; }
     case 'approval_done': { const t = tool(ev.id); if (t && t.status === 'waiting') { t.status = ev.decision === 'deny' ? 'denied' : 'run'; paint(t); } break; }
     case 'tool_output': { const t = tool(ev.id); if (t) { t.output = clipText((t.output || '') + ev.d, 12000); if (t.el.classList.contains('open')) paint(t); } break; }
-    case 'tool_result': { const t = tool(ev.id); if (t) { Object.assign(t, { content: ev.content, status: ev.denied ? 'denied' : ev.ok ? 'ok' : 'fail', ms: ev.ms }, ev.agent ? { agent: ev.agent, nTools: ev.tools } : {}); paint(t); } break; }
+    case 'tool_result': { const t = tool(ev.id); if (t) { Object.assign(t, { content: ev.content, status: ev.denied ? 'denied' : ev.ok ? 'ok' : 'fail', ms: ev.ms }, ev.agent ? { agent: ev.agent, nTools: ev.tools, stats: { model: ev.model, steps: ev.steps, in: ev.in, out: ev.out } } : {}); paint(t); } break; }
     case 'usage': if (S.cur) { S.cur.usage = ev.total; meter(); } S.gen = null; break;
     case 'todos': S.todos = ev.todos; todos(); break;
     case 'title': if (S.cur) { S.cur.title = ev.title; header(); } break;
@@ -828,7 +831,7 @@ $('#pageBack').innerHTML = I.back; $('#pageBack').onclick = closePage;
 $('#settingsBtn').innerHTML = I.gear; $('#settingsBtn').onclick = () => { drawer(false); settingsSheet(); };
 $('#newBtn').innerHTML = I.plus + 'New session'; $('#newBtn').onclick = () => { drawer(false); newSession(); };
 $('#newBtnWide').innerHTML = I.plus; $('#newBtnWide').onclick = () => { haptic(); newSession(); };
-$('#scrim').onclick = () => { drawer(false); closeSheet(); };
+$('#scrim').onclick = () => { drawer(false); agSide(false); closeSheet(); };
 $('#modeChip').onclick = () => { haptic(); modeSheet(); };
 $('#meter').onclick = usageSheet;
 $('#balBtn').onclick = () => { drawer(false); usageSheet(); };
@@ -977,6 +980,96 @@ async function boot() {
   if (!S.health.hasKey) { add({ kind: 'notice', err: true, text: 'No DeepSeek API key on the backend yet. Add one in Settings.' }); emptyState(); }
 }
 
+/* ---------- subagents sidebar ---------- */
+// Claude Code style: the session's subagents as one tree under dsh. Each agent keeps one identity
+// (its initial on a pale tint, hues in order of first appearance, neighbours far apart) on its chat
+// card, its row and its detail. Folded it is a panel from the right; unfolded, the Agents tab.
+const AG_HUES = [214, 32, 152, 340, 56, 188];
+const agHue = new Map(), agView = { sel: null, open: new Set() };
+const subagents = () => S.items.filter(x => x.kind === 'tool' && x.name === 'agent');
+const agSteps = it => S.items.filter(x => x.parent === it.id);
+function agIdent(it) { const n = agentLabel(it); if (!agHue.has(n)) agHue.set(n, AG_HUES[agHue.size % AG_HUES.length]); return { n, hue: agHue.get(n) }; }
+const agMono = (it, cls = '') => { const { n, hue } = agIdent(it); return `<span class="agm ${cls}" style="--h:${hue}" aria-hidden="true">${esc(n[0] || '?')}</span>`; };
+const agState = it => it.status === 'waiting' || agSteps(it).some(x => x.status === 'waiting') ? 'need' : it.status || 'run';
+const AG_STATE = { run: 'Working', need: 'Needs you', ok: 'Done', fail: 'Failed', denied: 'Denied' };
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+function agMeta(it) {
+  const steps = it.stats?.steps ?? (it.step != null ? it.step + 1 : 0), out = [];
+  if (steps) out.push(plural(steps, 'step'));
+  if (it.nTools) out.push(plural(it.nTools, 'tool'));
+  if (it.ms != null) out.push(fmtMs(it.ms));
+  return out.join(' · ');
+}
+const agLive = s => s === 'run' ? '<span class="livedot"></span>' : '';
+
+function agentsHtml() {
+  const list = subagents();
+  if (agView.sel && !list.some(x => x.id === agView.sel)) agView.sel = null;
+  if (agView.sel) return agDetailHtml(tool(agView.sel));
+  const live = list.filter(x => x.status === 'run' || x.status === 'waiting').length;
+  const root = `<div class="agroot"><span class="agnode${S.running ? ' run' : ''}"></span><span class="rx"><span class="r1">dsh</span><span class="r2">Main agent · ${esc(modelName(S.cur?.model || S.cfg?.model || 'deepseek-v4-pro'))}</span></span>
+    <span class="agst${S.running ? ' run' : ''}"><span class="l1">${S.running ? live ? `Waiting on ${plural(live, 'agent')}` : 'Working' : 'Idle'}</span></span></div>`;
+  const rows = list.map(it => { const s = agState(it); return `<button class="agrow" data-ag="${esc(it.id)}">${agMono(it)}<span class="rx"><span class="r1">${esc(agIdent(it).n)}</span><span class="r2">${esc(it.args?.description || '')}</span>${agMeta(it) ? `<span class="r2 r3">${esc(agMeta(it))}</span>` : ''}</span><span class="agst ${s}"><span class="l1">${agLive(s)}${AG_STATE[s]}</span></span></button>`; }).join('');
+  return `<div class="ihead"><h2>Agents</h2>${list.length ? `<span class="pill">${plural(list.length, 'subagent')}</span>` : ''}</div>
+    <div class="agtree${rows ? ' kids' : ''}">${root}${rows ? `<div class="agkids">${rows}</div>` : ''}</div>
+    ${rows ? '' : '<p class="hint">No subagents in this session yet. dsh starts one when part of a task goes better in a fresh context, with its own tools and model.</p>'}
+    <div class="rows agsaved"><button data-agsaved>${I.book}<span>Saved subagents</span>${I.chev}</button></div>`;
+}
+function agDetailHtml(it) {
+  const a = it.args || {}, st = it.stats || {}, s = agState(it), steps = agSteps(it), meta = agMeta(it);
+  const k = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+  const kv = [['Model', cap(modelName(st.model || a.model || S.cur?.model || 'inherit'))], a.tools && ['Tools', a.tools.map(tname).join(', ')], st.in != null && ['Tokens', `${k(st.in)} in · ${k(st.out)} out`]].filter(Boolean);
+  const done = it.status && it.status !== 'run' && it.status !== 'waiting';
+  return `<div class="agdhead"><button class="icon" data-agback aria-label="All agents">${I.back}</button>${agMono(it, 'big')}<div class="rx"><h2>${esc(agIdent(it).n)}</h2><span>${esc(a.description || '')}</span></div></div>
+    <p class="agstate ${s}">${agLive(s)}${AG_STATE[s]}${meta ? ' · ' + esc(meta) : ''}</p>
+    <div class="kvs agkv">${kv.map(([l, v]) => `<div class="kv"><span>${l}</span><b>${esc(v)}</b></div>`).join('')}</div>
+    <div class="panel"><h3>Task</h3><div class="agtext">${esc(a.prompt || '')}</div>${a.role ? `<h3 class="agh">Role</h3><div class="agtext">${esc(a.role)}</div>` : ''}</div>
+    ${steps.length ? `<div class="panel"><h3>Steps</h3><div class="agsteps">${steps.map(agStepHtml).join('')}</div></div>` : ''}
+    ${done && it.content ? `<div class="panel"><h3>${s === 'ok' ? 'Report to dsh' : 'Result'}</h3><div class="md agreport"></div></div>` : ''}
+    <div class="rowbtns"><button class="secondary" data-agchat>Show in chat</button></div>`;
+}
+function agStepHtml(x) {
+  const st = x.status || 'run', open = agView.open.has(x.id), id = esc(x.id);
+  return `<div class="agstep ${st}"><button data-step="${id}" aria-expanded="${open}">${TOOL_ICON[x.name] || I.term}<span class="tn">${esc(tname(x.name))}</span><span class="ts">${esc(x.summary || '')}</span><span class="st">${esc(statusText(x))}</span></button>`
+    + (open ? `<pre class="ipre">${esc(tail(x.content ?? x.output ?? '', 4000)) || 'Running…'}</pre>` : '')
+    + (st === 'waiting' ? `<div class="rowbtns"><button class="secondary" data-d="deny" data-sid="${id}">Deny</button><button class="secondary" data-d="always" data-sid="${id}">Always</button><button class="primary" data-d="allow" data-sid="${id}">Allow</button></div>` : '')
+    + '</div>';
+}
+// Rebuilt only when something it shows has changed, so streaming text elsewhere never resets it.
+const agSig = () => [agView.sel, [...agView.open].join(), S.running, ...subagents().map(it => [it.id, it.status, it.nTools, it.step, it.agent, ...agSteps(it).map(x => x.status + (agView.open.has(x.id) ? String(x.content ?? x.output ?? '').length : ''))].join())].join('|');
+function renderAgents(box, force) {
+  const sig = agSig(); if (!force && box.dataset.agsig === sig) return; box.dataset.agsig = sig;
+  const keep = box.scrollTop; box.innerHTML = agentsHtml(); box.scrollTop = keep;
+  const rep = box.querySelector('.agreport'); if (rep) renderMd(rep, tool(agView.sel)?.content);
+  const go = sel => { haptic(); agView.sel = sel; renderAgents(box, true); box.scrollTop = 0; };
+  box.querySelectorAll('[data-ag]').forEach(b => b.onclick = () => go(b.dataset.ag));
+  box.querySelector('[data-agback]')?.addEventListener('click', () => go(null));
+  box.querySelectorAll('[data-step]').forEach(b => b.onclick = () => { haptic(); const id = b.dataset.step; agView.open.has(id) ? agView.open.delete(id) : agView.open.add(id); renderAgents(box, true); });
+  box.querySelectorAll('[data-sid]').forEach(b => b.onclick = () => { const t = tool(b.dataset.sid); if (t) decide(t, b.dataset.d); });
+  box.querySelector('[data-agchat]')?.addEventListener('click', () => { haptic(); const t = tool(agView.sel); agSide(false); stick = false; t?.el.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
+  box.querySelector('[data-agsaved]')?.addEventListener('click', () => { agSide(false); agentPage(); });
+}
+function agSide(on) {
+  if (on === document.body.classList.contains('agside')) return;
+  document.body.classList.toggle('agside', on); $('#agside').ariaHidden = !on;
+  if (on) renderAgents($('#agsideBody'), true);
+  syncPreview();
+}
+function openAgents(id) {
+  haptic(); agView.sel = id || null;
+  if (layout.mode === 'wide') { if (chatFull) setChatFull(false); S.itab = 'agents'; $('#ibody').dataset.agsig = ''; ui(true); }
+  else agSide(true);
+}
+// The top-bar button: shown once the session has a subagent, with the number still running.
+function agBtn() {
+  const list = subagents(), b = $('#agentsBtn'), live = list.filter(x => x.status === 'run' || x.status === 'waiting').length, need = list.some(x => agState(x) === 'need');
+  b.hidden = !list.length;
+  const sig = `${list.length}/${live}/${need}`; if (b.dataset.sig === sig) return; b.dataset.sig = sig;
+  b.innerHTML = I.agents + (live ? `<span class="agbadge${need ? ' need' : ''}">${live}</span>` : '');
+  b.ariaLabel = `Subagents: ${list.length}` + (live ? `, ${live} running` : '') + (need ? ', one needs you' : '');
+}
+$('#agentsBtn').onclick = () => openAgents();
+
 /* ---------- foldable layout ---------- */
 // Three modes. cover/phone: single column. wide (unfolded, or half-open like a
 // book): chat in the pane left of the hinge, inspector on the right. tabletop
@@ -1019,7 +1112,7 @@ function relayout() {
   layout.mode = mode;
   for (const m of ['wide', 'tabletop']) document.body.classList.toggle(m, mode === m);
   paintFull();
-  if (changed) { if (mode === 'wide') { drawer(false); for (const t of S.items) t.el?.classList.remove('open'); } if (mode !== 'wide') S.sel = null; for (const t of S.items) if (t.kind === 'tool') paint(t); ui(true); requestAnimationFrame(follow); }
+  if (changed) { if (mode === 'wide') { if (document.body.classList.contains('agside')) { agSide(false); S.itab = 'agents'; } drawer(false); for (const t of S.items) t.el?.classList.remove('open'); } if (mode !== 'wide') S.sel = null; for (const t of S.items) if (t.kind === 'tool') paint(t); ui(true); requestAnimationFrame(follow); }
   syncPreview();
 }
 addEventListener('resize', relayout);
@@ -1027,11 +1120,13 @@ window.viewport?.addEventListener?.('segmentschange', relayout);
 
 let uiQueued = false;
 function ui(now) {
-  if (layout.mode === 'phone') return;
   if (now) return renderUI();
   if (!uiQueued) { uiQueued = true; requestAnimationFrame(() => { uiQueued = false; renderUI(); }); }
 }
-function renderUI() { if (layout.mode === 'wide') inspector(); else if (layout.mode === 'tabletop') deckLive(); syncPreview(); }
+function renderUI() {
+  agBtn(); if (document.body.classList.contains('agside')) renderAgents($('#agsideBody'));
+  if (layout.mode === 'phone') return;
+  if (layout.mode === 'wide') inspector(); else if (layout.mode === 'tabletop') deckLive(); syncPreview(); }
 
 const waitingTool = () => S.items.find(x => x.kind === 'tool' && x.status === 'waiting');
 const focusTool = () => S.items.find(x => x.id === S.sel) || [...S.items].reverse().find(x => x.kind === 'tool');
@@ -1046,7 +1141,7 @@ const tail = (t, n = 6000) => (t = String(t || ''), t.length > n ? '…' + t.sli
 const preview = { url: '', title: '', loading: false, canBack: false, error: '', console: '' };
 let previewUrl = local.get('previewUrl') || '';
 const previewShown = () => S.itab === 'preview' && layout.mode === 'wide' && !chatFull;
-const overlaysOpen = () => ['sheet', 'paged', 'drawer'].some(c => document.body.classList.contains(c));
+const overlaysOpen = () => ['sheet', 'paged', 'drawer', 'agside'].some(c => document.body.classList.contains(c));
 let pvRaf = 0;
 
 function syncPreview() {
@@ -1139,18 +1234,20 @@ function reloadPreviewAfterRun() {
 
 S.itab = 'activity';
 function inspector() {
-  const tabs = [['activity', I.activity, 'Activity'], ['tasks', I.list, 'Tasks'], ['stats', I.chart, 'Session'], ['sessions', I.folder, 'Sessions'], ['preview', I.globe, 'Preview']];
+  const tabs = [['activity', I.activity, 'Activity'], ['agents', I.agents, 'Agents'], ['tasks', I.list, 'Tasks'], ['stats', I.chart, 'Session'], ['sessions', I.folder, 'Sessions'], ['preview', I.globe, 'Preview']];
   const nt = (S.todos || []).filter(x => x.status !== 'completed').length;
   const nav = $('#itabs');
-  const sig = S.itab + nt + !!waitingTool();
+  const na = subagents().filter(x => x.status === 'run' || x.status === 'waiting').length;
+  const sig = S.itab + nt + !!waitingTool() + '/' + na;
   if (nav.dataset.sig !== sig) {
     nav.dataset.sig = sig;
-    nav.innerHTML = tabs.map(([k, ic, l]) => `<button role="tab" data-t="${k}" class="${S.itab === k ? 'on' : ''}" aria-selected="${S.itab === k}">${l}${k === 'tasks' && nt ? `<span class="count">${nt}</span>` : ''}${k === 'activity' && waitingTool() ? '<span class="count need">Needs you</span>' : ''}</button>`).join('');
+    nav.innerHTML = tabs.map(([k, ic, l]) => `<button role="tab" data-t="${k}" class="${S.itab === k ? 'on' : ''}" aria-selected="${S.itab === k}">${l}${k === 'tasks' && nt ? `<span class="count">${nt}</span>` : ''}${k === 'agents' && na ? `<span class="count">${na} running</span>` : ''}${k === 'activity' && waitingTool() ? '<span class="count need">Needs you</span>' : ''}</button>`).join('');
     nav.querySelectorAll('button').forEach(b => b.onclick = () => { haptic(); S.itab = b.dataset.t; nav.dataset.sig = ''; inspector(); syncPreview(); });
     requestAnimationFrame(() => nav.querySelector('.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
   }
   const box = $('#ibody'), keepScroll = box.scrollTop, atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   box.classList.toggle('previewing', S.itab === 'preview');
+  if (S.itab === 'agents') { if (box.dataset.tab !== 'agents') { box.dataset.tab = 'agents'; box.dataset.agsig = ''; } renderAgents(box); return; }
   if (S.itab === 'sessions') { if (box.dataset.tab !== 'sessions') { box.dataset.tab = 'sessions'; renderSessions(box); } return; }
   if (S.itab === 'preview') { if (box.dataset.tab !== 'preview' || !$('#previewHost')) previewBody(box); else renderPreviewBar(); return; }
   box.dataset.tab = S.itab;
