@@ -201,15 +201,9 @@ public class MainActivity extends Activity {
                     int st = c.getResponseCode();
                     if (st != 200) throw new IOException("HTTP " + st + " " + readAll(c.getErrorStream()));
                     BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
-                    StringBuilder batch = new StringBuilder(); long last = 0; String line;
-                    while ((line = r.readLine()) != null) {
-                        if (!line.startsWith("data: ")) continue;
-                        // Coalesce token deltas into one JS call per ~30ms to keep the UI thread free.
-                        batch.append(batch.length() == 0 ? "[" : ",").append(line.substring(6));
-                        long now = SystemClock.uptimeMillis();
-                        if (now - last > 30 || !r.ready()) { js("native.ev(" + JSONObject.quote(id) + "," + batch + "])"); batch.setLength(0); last = now; }
-                    }
-                    if (batch.length() > 0) js("native.ev(" + JSONObject.quote(id) + "," + batch + "])");
+                    // Coalesce token deltas into one JS call per ~30ms to keep the UI thread free.
+                    String q = JSONObject.quote(id);
+                    Sse.pump(r, batch -> js("native.ev(" + q + "," + batch + ")"), 30);
                 } catch (Exception e) { err = e.getClass().getSimpleName() + ": " + e.getMessage(); }
                 HttpURLConnection c = streams.remove(id);
                 if (c != null) c.disconnect();

@@ -29,3 +29,4 @@ dsh listens on 127.0.0.1 only and needs the token from `~/.dsh/config.json`. To 
 
 ## Changes
 - 0.1.0 (1): first version. dsh backend (agent loop, 9 tools, permission modes, SSE event log, sessions, compaction, terminal client) and the DSHA app (chat, approvals, sessions, settings, Termux pairing, notifications).
+- 0.1.1 (2): fix the app sticking on "Working…" after a reply. The native SSE reader held the last batch of events (final text, usage, run_end) until another event arrived; it now flushes whenever the stream goes idle (`Sse.java`, JVM check `tests/SseCheck.java`). The UI also re-checks with dsh every 10 s while a run looks active.

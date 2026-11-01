@@ -251,7 +251,8 @@ async function resync() {
   try {
     const s = await api('GET', '/api/sessions/' + S.cur.id);
     conn(true);
-    if (s.live.seq < S.seq || !S.close && s.live.fromSeq > S.seq) return load(S.cur.id); // server restarted or we missed a run
+    // Server restarted, we missed a run, or a run ended without its run_end reaching us.
+    if (s.live.seq < S.seq || !S.close && s.live.fromSeq > S.seq || S.running && !s.live.running && s.live.seq > S.seq) return load(S.cur.id);
     if (!S.close) listen();
   } catch { conn(false); if (!S.close) setTimeout(resync, 4000); }
 }
@@ -532,6 +533,10 @@ async function boot() {
   emptyState();
   if (!S.health.hasKey) { add({ kind: 'notice', err: true, text: 'No DeepSeek API key on the backend yet. Add one in Settings.' }); emptyState(); }
 }
+
+// Watchdog: while a run looks active, confirm with the server now and then, so a
+// lost event can never leave the UI spinning.
+setInterval(() => { if (S.running && S.cur && visible()) resync(); }, 10000);
 
 input.value = local.get('draft'); grow(); syncSend(); header();
 boot();
