@@ -325,6 +325,11 @@ async function refreshSessions() { try { S.sessions = await api('GET', '/api/ses
 function renderSessions(box = $('#sessions')) {
   if (box.id === 'sessions' && layout.mode === 'wide' && S.itab === 'sessions') renderSessions($('#ibody'));
   box.textContent = '';
+  if (box.id === 'ibody') { // the Inspector's list needs its own way in; the drawer is not reachable here
+    const nb = h('button', 'primary wide newSess', `${I.plus}New session`);
+    nb.onclick = () => { haptic(); newSession(); };
+    box.append(nb);
+  }
   const day = 864e5, now = Date.now(), groups = [['Today', x => now - x.updated < day], ['This week', x => now - x.updated < 7 * day], ['Earlier', () => true]];
   const used = new Set();
   for (const [name, f] of groups) {
@@ -728,6 +733,7 @@ $('#agentBtn').innerHTML = `${I.book}<span class="rx"><span class="r1">Plugins, 
 $('#pageBack').innerHTML = I.back; $('#pageBack').onclick = closePage;
 $('#settingsBtn').innerHTML = I.gear; $('#settingsBtn').onclick = () => { drawer(false); settingsSheet(); };
 $('#newBtn').innerHTML = I.plus + 'New session'; $('#newBtn').onclick = () => { drawer(false); newSession(); };
+$('#newBtnWide').innerHTML = I.plus; $('#newBtnWide').onclick = () => { haptic(); newSession(); };
 $('#scrim').onclick = () => { drawer(false); closeSheet(); };
 $('#modeChip').onclick = () => { haptic(); modeSheet(); };
 $('#meter').onclick = usageSheet;

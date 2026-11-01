@@ -225,6 +225,21 @@ const stat = http.createServer((req, res) => {
     assert.equal((await page.evaluate(() => window.__pv.open)).pop(), 'http://localhost:4321/about');
     await page.locator('#itabs button', { hasText: 'Activity' }).click();
 
+    // New session on the unfolded screen: the drawer, and its New session button, are hidden here.
+    assert.equal(await page.locator('#menuBtn').isVisible(), false);
+    assert.ok(await page.locator('#newBtnWide').isVisible());
+    await page.locator('#newBtnWide').click();
+    await page.locator('#sheet h3', { hasText: 'New session' }).waitFor();
+    assert.ok(await page.locator('#sheet .rowbtns .primary').isVisible(), 'the sheet offers Start');
+    await page.locator('#scrim').click({ position: { x: 200, y: 60 } }); await page.waitForTimeout(200);
+    // The Inspector's Sessions tab carries the same way in, for when you are already there.
+    await page.locator('#itabs [data-t=sessions]').click();
+    await page.locator('#ibody .newSess').waitFor();
+    await page.locator('#ibody .newSess').click();
+    await page.locator('#sheet h3', { hasText: 'New session' }).waitFor();
+    await page.locator('#scrim').click({ position: { x: 200, y: 60 } }); await page.waitForTimeout(200);
+    await page.locator('#itabs button', { hasText: 'Activity' }).click();
+
     // Fullscreen chat: the Inspector and hinge step aside, chat takes the unfolded screen.
     await page.locator('#fsBtn').click(); await page.waitForTimeout(250);
     assert.ok(await page.evaluate(() => document.body.classList.contains('chatfull')));
