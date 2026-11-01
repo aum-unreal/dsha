@@ -8,13 +8,15 @@ import crypto from 'node:crypto';
 import { loadConfig, saveConfig, readKey, writeKey, listSessions, createSession, deleteSession, HOME } from './store.mjs';
 import { runtime, dropRuntime, activeRuns } from './agent.mjs';
 import { DeepSeek } from './deepseek.mjs';
+import { Mcp } from './mcp.mjs';
 
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 
 export function createServer({ config = loadConfig } = {}) {
   let cfg = config();
   const getCfg = () => cfg;
-  const deps = { config: getCfg };
+  const mcp = new Mcp();
+  const deps = { config: getCfg, mcp };
 
   const routes = [
     ['GET', /^\/api\/health$/, () => ({ ok: true, version: VERSION, hasKey: !!readKey(), model: cfg.model, home: HOME, running: activeRuns() })],
@@ -26,6 +28,8 @@ export function createServer({ config = loadConfig } = {}) {
       if (b.verify !== false) await new DeepSeek({ key: k, base: cfg.base }).models().catch(e => { throw httpErr(400, 'Key rejected: ' + e.message); });
       writeKey(k); return { ok: true };
     }],
+    ['GET', /^\/api\/mcp$/, async () => { await mcp.schemas(); return mcp.status(); }],
+    ['POST', /^\/api\/mcp\/reload$/, async () => { mcp.reload(); await mcp.schemas(); return mcp.status(); }],
     ['GET', /^\/api\/models$/, () => api().models()],
     ['GET', /^\/api\/balance$/, () => api().balance()],
     ['GET', /^\/api\/sessions$/, () => listSessions().map(s => ({ ...s, running: activeRuns().includes(s.id) }))],
@@ -60,7 +64,7 @@ export function createServer({ config = loadConfig } = {}) {
   const rt = id => { const r = runtime(id, deps); if (!r) throw httpErr(404, 'No such session'); return r; };
   const api = () => { const k = readKey(); if (!k) throw httpErr(412, 'No API key set'); return new DeepSeek({ key: k, base: cfg.base }); };
 
-  return http.createServer(async (req, res) => {
+  const srv = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     if (req.method === 'OPTIONS') return send(res, 204, null);
     if (!authed(req, cfg.token)) return send(res, 401, { error: 'Bad or missing token' });
@@ -79,6 +83,8 @@ export function createServer({ config = loadConfig } = {}) {
     }
     send(res, 404, { error: 'Not found' });
   });
+  srv.on('close', () => mcp.close());
+  return srv;
 
   function stream(req, res, id, after) {
     let r; try { r = rt(id); } catch (e) { return send(res, 404, { error: e.message }); }

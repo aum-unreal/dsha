@@ -189,7 +189,7 @@ function fromMessages(msgs, meta = {}) {
   });
   addFoot();
 }
-function summarize(n, a) { return n === 'bash' ? a.command : a.path || a.pattern || a.url || (n === 'todo_write' ? `${(a.todos || []).length} items` : ''); }
+function summarize(n, a) { return n === 'bash' ? a.command : a.path || a.pattern || a.url || (n === 'todo_write' ? `${(a.todos || []).length} items` : Object.keys(a).length ? JSON.stringify(a).slice(0, 200) : ''); }
 const clipText = (s, n = 8000) => (s = String(s ?? ''), s.length > n ? s.slice(0, n) + `\n… (${s.length - n} more chars)` : s);
 function addFoot() {
   const lt = [...S.items].reverse(); const i = lt.findIndex(x => x.kind === 'user'); const turn = i < 0 ? lt : lt.slice(0, i);

@@ -30,7 +30,7 @@ function contextFiles(cwd) {
   return out.join('\n');
 }
 
-export function systemPrompt(s) {
+export function systemPrompt(s, mcp = '') {
   const files = contextFiles(s.cwd);
   return `You are dsh, a coding and operations agent running on the user's own machine (${os.platform()} ${os.arch()}${process.env.PREFIX ? ', Termux on Android' : ''}) and talking to them through the DSHA phone app.
 Working directory: ${s.cwd}
@@ -43,12 +43,12 @@ How to work:
 - For multi-step tasks keep a todo list with todo_write.
 - Tool calls may be denied by the user; if so, don't retry the same call — adjust or ask.
 - Don't run destructive commands (rm -rf, force-push, wiping data) unless the user clearly asked.
-- Report outcomes faithfully: if a command failed, say so.${files ? '\n\nProject instructions found in the working directory:\n' + files : ''}`;
+- Report outcomes faithfully: if a command failed, say so.${mcp ? '\n\nExternal tool servers (MCP) connected; their tools sit next to the built-ins and follow the same approval rules:\n' + mcp : ''}${files ? '\n\nProject instructions found in the working directory:\n' + files : ''}`;
 }
 
 export class Runtime {
-  constructor(s, { config }) {
-    this.s = s; this.config = config;
+  constructor(s, { config, mcp }) {
+    this.s = s; this.config = config; this.mcp = mcp;
     this.events = []; this.seq = 0; this.subs = new Set();
     this.running = false; this.abort = null; this.waiting = new Map(); this.runBase = s.messages.length; this.runSeq = 0;
   }
@@ -100,14 +100,16 @@ export class Runtime {
   client() { return new DeepSeek({ key: readKey(), base: this.config().base }); }
 
   apiMessages() {
-    return [{ role: 'system', content: systemPrompt(this.s) }, ...this.s.messages];
+    return [{ role: 'system', content: systemPrompt(this.s, this.mcp?.prompt()) }, ...this.s.messages];
   }
 
   async loop() {
-    const s = this.s, ds = this.client(), signal = this.abort.signal, tools = schemas();
+    const s = this.s, ds = this.client(), signal = this.abort.signal, builtin = schemas();
     const max = this.config().maxSteps;
     for (let step = 0; step < max; step++) {
       if (signal.aborted) return;
+      // MCP tools are re-listed each step: a call can enable more of them.
+      const tools = this.mcp ? [...builtin, ...await this.mcp.schemas(new Set(Object.keys(TOOLS)))] : builtin;
       if (s.usage.lastPrompt > COMPACT_AT) await this.compact(ds, signal);
       this.emit('step_start', { step });
       let r0 = 0, rMs = 0, f0 = 0;
@@ -139,8 +141,8 @@ export class Runtime {
     const s = this.s, name = call.function.name, id = call.id, t0 = Date.now();
     let args;
     try { args = JSON.parse(call.function.arguments || '{}'); } catch (e) { args = null; }
-    const tool = TOOLS[name];
-    this.emit('tool_call', { id, name, args, summary: args ? summarize(name, args) : call.function.arguments, risk: tool?.risk });
+    const tool = TOOLS[name] || this.mcp?.lookup(name);
+    this.emit('tool_call', { id, name, args, summary: args ? summarize(name, args) : call.function.arguments, risk: tool?.risk, mcp: tool?.mcp });
     const finish = (ok, content, extra = {}) => {
       s.meta[id] = { ok, ms: Date.now() - t0, ...extra };
       this.emit('tool_result', { id, ok, content: clip(content, 8000), ms: s.meta[id].ms, ...extra });
@@ -149,7 +151,7 @@ export class Runtime {
     if (!tool) return finish(false, `Unknown tool: ${name}`);
     if (!args) return finish(false, `Invalid JSON arguments: ${call.function.arguments}`);
     if (!this.allowed(name, tool.risk)) {
-      const decision = await new Promise(r => { this.waiting.set(id, r); this.emit('approval', { id, name, summary: summarize(name, args), args }); });
+      const decision = await new Promise(r => { this.waiting.set(id, r); this.emit('approval', { id, name, summary: summarize(name, args), args, mcp: tool.mcp }); });
       this.waiting.delete(id);
       this.emit('approval_done', { id, decision });
       if (decision === 'always') { if (!s.allow.includes(name)) s.allow.push(name); }

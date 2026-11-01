@@ -4,7 +4,7 @@ A phone UI for **dsh**, a DeepSeek-powered coding/ops agent that runs on your ow
 
 ```
 DSHA (Android, WebView UI) ──HTTP+SSE, bearer token──▶ dsh (Node, Termux, 127.0.0.1:8787) ──▶ api.deepseek.com
-                                                         └─ tools: bash, read/write/edit file, list, grep, glob, web_fetch, todo
+                                                         └─ tools: bash, read/write/edit file, list, grep, glob, web_fetch, todo, + MCP servers from ~/.dsh/mcp.json
 ```
 
 ## Use
@@ -30,6 +30,7 @@ The terminal client shares sessions with the app: `dsh` (new session in the cwd)
 dsh listens on 127.0.0.1 only and needs the token from `~/.dsh/config.json`. To expose it on another machine, set `host` in that file and put it behind HTTPS (the app permits cleartext only to localhost). In Auto mode the model can run any command as your Termux user.
 
 ## Changes
+- 0.5.1 (8): MCP tool servers in dsh 0.3.0. `~/.dsh/mcp.json` lists servers (`command`/`args` for stdio, `url` for streamable HTTP, optional `start` hook and default `risk`); their tools join the built-ins, go through the same Ask/Edits/Auto gate, are re-listed every step (toolset gating), and each server's instructions are added to the system prompt. `dsh mcp [reload]` and `GET /api/mcp` show state. Ships configured for the Godot Editor MCP service (`godot-mcp start`, shared with Claude Code over `http://127.0.0.1:9090/mcp`). App: history cards summarise unknown tools' arguments.
 - 0.1.0 (1): first version. dsh backend (agent loop, 9 tools, permission modes, SSE event log, sessions, compaction, terminal client) and the DSHA app (chat, approvals, sessions, settings, Termux pairing, notifications).
 - 0.1.1 (2): fix the app sticking on "Working…" after a reply. The native SSE reader held the last batch of events (final text, usage, run_end) until another event arrived; it now flushes whenever the stream goes idle (`Sse.java`, JVM check `tests/SseCheck.java`). The UI also re-checks with dsh every 10 s while a run looks active.
 - 0.4.0 (6): Light mode (Settings > Appearance: System, Dark or Light; the native side recolours the system bars). Generation speed in tok/s: dsh 0.2.0 measures each model call from first streamed token to end; shown in the meter, the Session tab (last and average) and live in the run strip while streaming (estimated). Composer keeps clear of the gesture bar; task-list summaries in plain text.

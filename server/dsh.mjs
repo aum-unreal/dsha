@@ -7,6 +7,7 @@
 //   dsh key [sk-…]       set the DeepSeek API key (prompts if omitted)
 //   dsh [-c] [dir]       terminal chat in dir (-c continues the latest session there)
 //   dsh ls               list sessions
+//   dsh mcp [reload]     MCP servers from ~/.dsh/mcp.json: state and tool counts
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -54,6 +55,13 @@ switch (cmd) {
   case 'restart': { const p = alive(); if (p) { process.kill(p, 'SIGTERM'); await new Promise(r => setTimeout(r, 500)); } await start(); console.log(`dsh restarted (pid ${alive()})`); break; }
   case 'status': { const ok = await up(); console.log(ok ? `running on ${base} pid ${alive()}` : 'not running'); if (ok) console.log(await call('GET', '/api/health')); break; }
   case 'token': console.log(cfg.token); break;
+  case 'mcp': {
+    await start();
+    const list = rest[0] === 'reload' ? await call('POST', '/api/mcp/reload') : await call('GET', '/api/mcp');
+    if (!list.length) console.log('no MCP servers configured (' + path.join(HOME, 'mcp.json') + ')');
+    for (const s of list) console.log(`${s.name.padEnd(12)} ${s.transport.padEnd(6)} ${s.state.padEnd(10)} ${s.state === 'up' ? s.tools + ' tools' + (s.server ? ` (${s.server.name} ${s.server.version || ''})` : '') : s.error || ''}`);
+    break;
+  }
   case 'url': console.log(base); break;
   case 'key': {
     let k = rest[0];
@@ -61,7 +69,7 @@ switch (cmd) {
     writeKey(k); console.log('saved'); break;
   }
   case 'ls': { await start(); for (const s of await call('GET', '/api/sessions')) console.log(`${s.id}  ${new Date(s.updated).toISOString().slice(0, 16)}  ${s.cwd}  ${s.title}`); break; }
-  case '-h': case '--help': case 'help': console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 10).map(l => l.replace(/^\/\/ ?/, '')).join('\n')); break;
+  case '-h': case '--help': case 'help': console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 11).map(l => l.replace(/^\/\/ ?/, '')).join('\n')); break;
   default: await chat(cmd === '-c' ? rest[0] : cmd, cmd === '-c');
 }
 
