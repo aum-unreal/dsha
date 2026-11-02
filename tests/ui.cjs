@@ -304,7 +304,26 @@ const stat = http.createServer((req, res) => {
     await page.locator('#meter').click();
     await page.locator('#sheet .kpi', { hasText: 'Balance' }).filter({ hasText: '5.73 USD' }).waitFor();
     await page.waitForTimeout(250); await page.screenshot({ path: shot('usage') });
-    await page.locator('#scrim').click({ position: { x: 180, y: 20 } }); await page.waitForTimeout(250);
+
+    // The Usage page: total spend from dsh's ledger, a daily chart, then per-session spend.
+    await page.getByRole('button', { name: 'All sessions and total spend' }).click();
+    await page.locator('#pbody .kpi', { hasText: 'Total spent' }).waitFor();
+    assert.match(await page.locator('#pbody .kpi', { hasText: 'Total spent' }).locator('b').textContent(), /^\$0\.\d+$/);
+    assert.equal(await page.locator('.ubars button').count(), 30);
+    assert.match(await page.locator('#ucap').textContent(), /^\S+ \d+ \$[\d.]+ · \d+ calls? · /);
+    const bars = await page.evaluate(() => { const b = document.querySelector('.ubars'); return { over: b.scrollWidth - b.clientWidth, todayH: b.lastElementChild.firstElementChild.getBoundingClientRect().height }; });
+    assert.ok(bars.over <= 0 && bars.todayH > 0, 'daily bars fit and today has spend: ' + JSON.stringify(bars));
+    await page.waitForTimeout(200); await page.screenshot({ path: shot('usage-page') });
+    await page.getByRole('tab', { name: 'Sessions' }).click();
+    await page.locator('.urow').first().waitFor();
+    await page.getByRole('button', { name: 'Most spent' }).click();
+    const costs = await page.locator('.uhead b').allTextContents();
+    const nums = costs.map(c => +c.replace(/[^\d.]/g, ''));
+    assert.deepEqual(nums, [...nums].sort((a, b) => b - a), 'sorted by spend: ' + costs);
+    await page.locator('.uhead').first().click();
+    await page.locator('.udetail', { hasText: 'Model calls' }).waitFor();
+    await page.waitForTimeout(200); await page.screenshot({ path: shot('usage-sessions') });
+    await page.locator('#pageBack').click(); await page.waitForTimeout(250);
 
     // An older session in a temp folder gets a warning and a one-tap move to home; new sessions never start there.
     const scratch = path.join(tmp, 'scratch', 'live'); fs.mkdirSync(scratch, { recursive: true });

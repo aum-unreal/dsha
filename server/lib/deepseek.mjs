@@ -12,6 +12,14 @@ export const PRICES = {
   'deepseek-v4-pro': { hit: [0.044, 0.022], miss: [1.32, 0.66], out: [3.96, 1.98] },
 };
 
+// Peak hours (api-docs.deepseek.com/quick_start/pricing, checked 2026-11-02): 01:00-04:00 and
+// 06:00-10:00 UTC, Monday to Friday; everything else is off-peak at half price. Chinese public
+// holidays are off-peak too, but dsh doesn't know them, so a holiday call is counted at peak.
+export function isPeak(t = Date.now()) {
+  const d = new Date(t), day = d.getUTCDay(), h = d.getUTCHours();
+  return day >= 1 && day <= 5 && (h >= 1 && h < 4 || h >= 6 && h < 10);
+}
+
 export function cost(model, u) {
   const p = PRICES[model] || PRICES['deepseek-flash'];
   const f = i => ((u.hit || 0) * p.hit[i] + (u.miss || 0) * p.miss[i] + (u.out || 0) * p.out[i]) / 1e6;

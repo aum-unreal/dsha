@@ -5,6 +5,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { usageReport } from './usage.mjs';
 import { loadConfig, saveConfig, readKey, writeKey, listSessions, createSession, deleteSession, HOME, TEMP_ROOTS, isTemp, USER_HOME } from './store.mjs';
 import { runtime, dropRuntime, activeRuns, apiState } from './agent.mjs';
 import { DeepSeek } from './deepseek.mjs';
@@ -14,7 +15,7 @@ import { systemPrompt } from './agent.mjs';
 import { listAgents, readAgent, saveAgent, setAgent, setClaudeAgents, deleteAgent } from './agents.mjs';
 import { TOOLS } from './tools.mjs';
 
-export const VERSION = '0.8.0';
+export const VERSION = '0.9.0';
 
 export function createServer({ config = loadConfig } = {}) {
   let cfg = config();
@@ -86,6 +87,7 @@ export function createServer({ config = loadConfig } = {}) {
     ['GET', /^\/api\/system$/, q => { const id = q.query.get('session'); return { text: id ? systemPrompt(rt(id).s, mcp.prompt()) : systemPrompt({ cwd: cwdOf(q.query.get('cwd')) }, mcp.prompt()) }; }],
     ['GET', /^\/api\/models$/, () => api().models()],
     ['GET', /^\/api\/balance$/, () => api().balance()],
+    ['GET', /^\/api\/usage$/, () => usageReport({ running: activeRuns() })],
     ['GET', /^\/api\/sessions$/, () => listSessions().map(s => ({ ...s, running: activeRuns().includes(s.id) }))],
     ['POST', /^\/api\/sessions$/, (_, b) => {
       // New sessions start somewhere that survives: never a temp folder, and the default falls back to home.

@@ -626,7 +626,7 @@ const kb = n => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
 function agentPage(tab = S.ptab || 'agents') {
   S.ptab = tab; drawer(false); closeSheet();
   const page = $('#page'); page.hidden = false; document.body.classList.add('paged'); syncPreview();
-  $('#pageSub').textContent = 'For ' + short(pageCwd());
+  $('#pageTitle').textContent = 'Agent'; $('#pageSub').textContent = 'For ' + short(pageCwd());
   $('#ptabs').innerHTML = PTABS.map(([k, l]) => `<button role="tab" data-t="${k}" class="${k === tab ? 'on' : ''}" aria-selected="${k === tab}">${l}</button>`).join('');
   $('#ptabs').querySelectorAll('button').forEach(b => b.onclick = () => { haptic(); agentPage(b.dataset.t); });
   $('#pbody').scrollTop = 0;
@@ -899,7 +899,7 @@ $('#newBtnWide').innerHTML = I.plus; $('#newBtnWide').onclick = () => { haptic()
 $('#scrim').onclick = () => { drawer(false); agSide(false); closeSheet(); };
 $('#modeChip').onclick = () => { haptic(); modeSheet(); };
 $('#meter').onclick = usageSheet;
-$('#balBtn').onclick = () => { drawer(false); usageSheet(); };
+$('#balBtn').onclick = () => usagePage();
 $('#cwdChip').onclick = () => S.cur && pickDir(S.cur.cwd, d => patch({ cwd: d }));
 
 function sheet(html, actions = {}) {
@@ -1402,7 +1402,79 @@ function statsHtml(s) {
 }
 function usageSheet() {
   if (!S.cur) return toast('Open a session to see its usage');
-  haptic(); sheet(`<h3>Usage</h3>${statsHtml(S.cur)}`); refreshBalance(true);
+  haptic(); sheet(`<h3>Usage</h3>${statsHtml(S.cur)}<button class="secondary wide" data-a="all">All sessions and total spend</button>`, { all: () => usagePage() }); refreshBalance(true);
+}
+
+/* ---------- usage page: total spend, by day, by model, per session ---------- */
+// dsh logs every model call with what it cost at that hour (peak or off-peak); sessions from before
+// the ledger come back as an off-peak estimate, flagged as such.
+const money = v => '$' + (v >= 10 ? v.toFixed(2) : v >= 0.01 ? v.toFixed(3) : v > 0 ? v.toFixed(4) : '0');
+const spent = x => (x.cost || 0) + (x.est || 0);
+const ktok = n => n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n);
+const dayLabel = d => new Date(d + 'T12:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+// DeepSeek's peak windows (01-04, 06-10 UTC, weekdays), as local times, and the next switch from now.
+function peakClock(now = new Date()) {
+  const peakAt = t => { const d = new Date(t), w = d.getUTCDay(), h = d.getUTCHours(); return w >= 1 && w <= 5 && (h >= 1 && h < 4 || h >= 6 && h < 10); };
+  const hm = (h, m = 0) => { const d = new Date(Date.UTC(2026, 0, 5, h, m)); return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
+  const on = peakAt(+now); let t = Math.ceil(+now / 9e5) * 9e5; // look ahead in 15 min steps (some zones sit on :30)
+  for (let i = 0; i < 7 * 96 && peakAt(t) === on; i++) t += 9e5;
+  const at = new Date(t), sameDay = at.toDateString() === now.toDateString();
+  const when = (sameDay ? '' : at.toLocaleDateString(undefined, { weekday: 'short' }) + ' ') + at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return { on, next: when, windows: `${hm(1)}–${hm(4)} and ${hm(6)}–${hm(10)}` };
+}
+async function usagePage(tab = S.utab || 'overview') {
+  S.utab = tab; S.ptab = 'usage'; drawer(false); closeSheet();
+  const page = $('#page'); page.hidden = false; document.body.classList.add('paged'); syncPreview();
+  $('#pageTitle').textContent = 'Usage'; $('#pageSub').textContent = S.usage ? 'Since ' + new Date(S.usage.since).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+  $('#ptabs').innerHTML = [['overview', 'Overview'], ['sessions', 'Sessions']].map(([k, l]) => `<button role="tab" data-t="${k}" class="${k === tab ? 'on' : ''}" aria-selected="${k === tab}">${l}</button>`).join('');
+  $('#ptabs').querySelectorAll('button').forEach(b => b.onclick = () => { haptic(); usagePage(b.dataset.t); });
+  if (!S.usage) pbody('<div class="iempty">Loading…</div>');
+  refreshBalance(true);
+  try { S.usage = await api('GET', '/api/usage'); } catch (e) { if (!S.usage) return pbody(`<div class="iempty">${esc(e.message)}</div>`); }
+  if (!pageOn('usage') || S.utab !== tab) return;
+  $('#pageSub').textContent = 'Since ' + new Date(S.usage.since).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  (tab === 'sessions' ? usageSessions : usageOverview)(S.usage);
+}
+function usageOverview(u) {
+  const t = u.total, p = u.periods, c = peakClock(), max = Math.max(...u.days.map(spent), 1e-9);
+  const peakShare = t.cost > 0 ? Math.round(t.peak / t.cost * 100) : null;
+  const b = pbody(`<div class="ubody">
+    <div class="kpis">
+      <div class="kpi"><span>Total spent</span><b>${money(spent(t))}</b><small>${ktok(t.hit + t.miss)} in · ${ktok(t.out)} out</small></div>
+      <div class="kpi"><span>Last 30 days</span><b>${money(spent(p.month))}</b><small>7 days: ${money(spent(p.week))}</small></div>
+      <div class="kpi"><span>Today</span><b>${money(spent(p.today))}</b><small>${p.today.calls} model call${p.today.calls === 1 ? '' : 's'}</small></div>
+      <div class="kpi"><span>Balance</span><b class="balv">${esc(S.balance || '…')}</b><small>DeepSeek account</small></div>
+    </div>
+    <div class="panel"><h3>Pricing now</h3>
+      <div class="kv"><span>${c.on ? 'Peak now' : 'Off-peak now'}</span><b>${c.on ? 'Half price' : 'Full price'} at ${esc(c.next)}</b></div>
+      <div class="kv"><span>Peak hours</span><b>${esc(c.windows)}</b></div>
+      ${peakShare != null ? `<div class="kv"><span>Spend at peak rates</span><b>${peakShare}%</b></div>` : ''}
+    </div>
+    <div class="panel"><h3>Daily spend, last 30 days</h3>
+      <div class="ubars" role="list">${u.days.map((d, i) => `<button role="listitem" data-i="${i}" aria-label="${esc(dayLabel(d.day))}: ${money(spent(d))}"${i === u.days.length - 1 ? ' class="sel"' : ''}><i style="height:${spent(d) > 0 ? Math.max(3, spent(d) / max * 100) : 0}%"></i></button>`).join('')}</div>
+      <div class="uaxis"><span>${esc(dayLabel(u.days[0].day))}</span><span>Today</span></div>
+      <div class="ucap" id="ucap"></div>
+    </div>
+    <div class="panel"><h3>By model</h3>${u.models.map(m => `<div class="kv"><span>${esc(modelName(m.model))}</span><b>${money(spent(m))} · ${ktok(m.hit + m.miss + m.out)} tokens</b></div>`).join('') || '<div class="hint">No model calls yet.</div>'}</div>
+    ${t.est > 0 ? `<p class="hint">${money(t.est)} of this is estimated: sessions from before dsh 0.9.0 kept only their totals, so that part is priced at off-peak rates. From now on every call is logged at the rate of its hour.</p>` : ''}
+  </div>`);
+  const cap = i => { const d = u.days[i]; b.querySelector('#ucap').innerHTML = `<b>${esc(dayLabel(d.day))}</b> ${money(spent(d))}${d.est > 0 ? ' (estimated)' : ''} · ${d.calls} call${d.calls === 1 ? '' : 's'} · ${ktok(d.out)} out`; };
+  b.querySelectorAll('.ubars button').forEach(x => x.onclick = () => { haptic(); b.querySelectorAll('.ubars .sel').forEach(y => y.classList.remove('sel')); x.classList.add('sel'); cap(+x.dataset.i); });
+  cap(u.days.length - 1);
+}
+function usageSessions(u) {
+  const by = S.usort || 'recent';
+  const list = [...u.sessions].sort(by === 'cost' ? (a, b) => spent(b) - spent(a) : (a, b) => b.updated - a.updated);
+  const top = Math.max(...list.map(spent), 1e-9);
+  const b = pbody(`<div class="ubody">${seg('sort', [['recent', 'Recent'], ['cost', 'Most spent']], by)}
+    <div class="ulist">${list.map((x, i) => `<div class="urow${S.uopen === x.id ? ' open' : ''}" data-i="${i}"><button class="uhead"><span class="rx"><span class="r1">${esc(x.title)}</span><span class="r2">${esc(new Date(x.updated).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))} · ${x.turns} turn${x.turns === 1 ? '' : 's'} · ${ktok(x.hit + x.miss + x.out)} tokens${x.running ? ' · running' : ''}</span><span class="ushare" aria-hidden="true"><i style="width:${spent(x) / top * 100}%"></i></span></span><b>${x.est > 0 && !x.cost ? '≈' : ''}${money(spent(x))}</b></button>
+      ${S.uopen === x.id ? `<div class="udetail"><div class="kv"><span>Input</span><b>${ktok(x.hit + x.miss)} · ${x.hit + x.miss ? Math.round(x.hit / (x.hit + x.miss) * 100) : 0}% cache hits</b></div><div class="kv"><span>Output</span><b>${ktok(x.out)}${x.reasoning ? ` · ${ktok(x.reasoning)} reasoning` : ''}</b></div><div class="kv"><span>Model calls</span><b>${x.calls || 'Not logged'}</b></div>${x.cost > 0 ? `<div class="kv"><span>At peak rates</span><b>${money(x.peak)}</b></div>` : ''}${x.est > 0 ? `<div class="kv"><span>Estimated</span><b>${money(x.est)}, before logging</b></div>` : ''}${x.cwd ? `<div class="kv"><span>Folder</span><b>${esc(short(x.cwd))}</b></div>` : ''}${x.deleted ? '' : '<button class="secondary wide" data-a="open">Open session</button>'}</div>` : ''}</div>`).join('') || '<div class="iempty">No sessions yet.</div>'}</div></div>`);
+  b.querySelectorAll('[data-a="sort"]').forEach(x => x.onclick = () => { haptic(); S.usort = x.dataset.v; usageSessions(u); });
+  b.querySelectorAll('.urow').forEach(r => {
+    const x = list[+r.dataset.i];
+    r.querySelector('.uhead').onclick = () => { haptic(); S.uopen = S.uopen === x.id ? null : x.id; usageSessions(u); };
+    const o = r.querySelector('[data-a="open"]'); if (o) o.onclick = () => { haptic(); closePage(); load(x.id); };
+  });
 }
 
 /* ---------- account balance: on boot, after each run, and whenever a view of it opens ---------- */

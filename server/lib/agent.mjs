@@ -5,11 +5,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { DeepSeek, cost, asApiError } from './deepseek.mjs';
+import { DeepSeek, cost, isPeak, asApiError } from './deepseek.mjs';
 import { TOOLS, schemas, summarize, clip } from './tools.mjs';
 import { contextFiles, skillPrompt, memoryPrompt } from './skills.mjs';
 import { agentPrompt, resolveAgent } from './agents.mjs';
 import { saveSession, loadSession, readKey } from './store.mjs';
+import { logUsage } from './usage.mjs';
 
 const runtimes = new Map();
 const MAX_EVENTS = +process.env.DSH_MAX_EVENTS || 20000;
@@ -299,6 +300,10 @@ Work on your own: you cannot ask the user or the main agent anything, and the us
     const U = this.s.usage, c = cost(model, u);
     U.hit += u.hit; U.miss += u.miss; U.out += u.out; U.reasoning = (U.reasoning || 0) + (u.reasoning || 0);
     U.costPeak = (U.costPeak || 0) + c.peak; U.costOff = (U.costOff || 0) + c.offpeak;
+    // What the call actually cost, at the rate of the hour it ran in. costPeak/costOff stay as the two bounds.
+    const peak = isPeak(), spent = peak ? c.peak : c.offpeak;
+    U.cost = (U.cost || 0) + spent;
+    logUsage({ t: Date.now(), sid: this.s.id, model, sub: sub || undefined, hit: u.hit || 0, miss: u.miss || 0, out: u.out || 0, reasoning: u.reasoning || 0, cost: spent, off: c.offpeak, peak: peak || undefined });
     if (!sub) U.lastPrompt = u.hit + u.miss;
     if (genMs > 0 && u.out > 0) { u.tps = Math.round(u.out / (genMs / 1000)); U.genOut = (U.genOut || 0) + u.out; U.genMs = (U.genMs || 0) + genMs; U.tps = u.tps; }
     this.emit('usage', { step: u, total: U });
