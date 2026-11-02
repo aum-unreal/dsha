@@ -17,13 +17,13 @@ if [ "$FLAVOR" = standalone ]; then
   cp -r assets build/assets && cp -r server build/assets/dsh && rm -rf build/assets/dsh/test
   python - <<'PY'
 m = open('AndroidManifest.xml').read()
-perms = ''.join(f'  <uses-permission android:name="android.permission.{p}"/>\n' for p in ['FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_SPECIAL_USE', 'MANAGE_EXTERNAL_STORAGE'])
+perms = ''.join(f'  <uses-permission android:name="android.permission.{p}"/>\n' for p in ['MANAGE_EXTERNAL_STORAGE'])
 m = m.replace('  <uses-permission android:name="android.permission.INTERNET"/>\n', '  <uses-permission android:name="android.permission.INTERNET"/>\n' + perms, 1)
 m = m.replace('android:label="DSHA"', 'android:label="DSHA Standalone" android:extractNativeLibs="true"', 1)
 svc = ('    <service android:name=".Backend" android:exported="false" android:foregroundServiceType="specialUse">\n'
        '      <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Runs the dsh agent backend that the app talks to on localhost"/>\n'
        '    </service>\n  </application>')
-m = m.replace('  </application>', svc, 1)
+m = m.replace('  </application>', svc, 1)  # the base manifest's RunService already declares the FGS permissions
 assert m.count('Backend') == 1 and 'extractNativeLibs' in m and 'SPECIAL_USE' in m
 open('build/AndroidManifest.xml', 'w').write(m)
 PY

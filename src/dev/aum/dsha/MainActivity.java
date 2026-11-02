@@ -41,6 +41,7 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
     private final Handler main = new Handler(Looper.getMainLooper());
     private String pendingShare;
     private boolean ready, visible;
+    private long pausedAt;
     private Runnable afterPerm;
     private android.hardware.SensorManager sensors;
     private android.hardware.Sensor hinge;
@@ -50,7 +51,7 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
     // The web UI's theme (system, dark or light) drives the window behind it and the system bar icons.
     private void applyBars(boolean dark) {
         int bg = dark ? 0xff000000 : 0xffffffff;
-        root.setBackgroundColor(bg); web.setBackgroundColor(bg);
+        root.setBackgroundColor(bg); if (web != null) web.setBackgroundColor(bg);
         if (preview != null) preview.setBackgroundColor(bg);
         android.view.Window w = getWindow();
         w.setStatusBarColor(bg); w.setNavigationBarColor(bg);
@@ -93,7 +94,17 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         s.setSupportZoom(false);
         web.addJavascriptInterface(new Bridge(), "Native");
+        // Keep the renderer at the app's own priority when the screen is off. During a run RunService
+        // makes that a foreground-service priority, so Android doesn't reap the chat mid-run.
+        web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
         web.setWebViewClient(new WebViewClient() {
+            // If Android kills the renderer anyway, rebuild the Activity (the UI reloads the session
+            // from dsh) instead of letting the default handling take the whole app down.
+            @Override public boolean onRenderProcessGone(WebView w, RenderProcessGoneDetail d) {
+                android.util.Log.w("DSHA", "renderer gone, crashed=" + d.didCrash());
+                if (w == web) { root.removeView(web); web.destroy(); web = null; ready = false; main.post(MainActivity.this::recreate); }
+                return true;
+            }
             @Override public WebResourceResponse shouldInterceptRequest(WebView w, WebResourceRequest req) {
                 Uri u = req.getUrl();
                 if (!u.toString().startsWith(ORIGIN)) return new WebResourceResponse("text/plain", "utf-8", 403, "Blocked", null, null);
@@ -116,11 +127,11 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
 
     @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); handleIntent(i); }
     @Override protected void onResume() {
-        super.onResume(); visible = true; if (builtin() && !Backend.running()) Backend.start(this); if (preview != null) preview.onResume(); js("window.native&&native.resume&&native.resume()");
+        super.onResume(); visible = true; if (builtin() && !Backend.running()) Backend.start(this); if (preview != null) preview.onResume(); long away = pausedAt > 0 ? SystemClock.elapsedRealtime() - pausedAt : 0; js("window.native&&native.resume&&native.resume(" + away + ")");
         if (hinge != null) sensors.registerListener(this, hinge, android.hardware.SensorManager.SENSOR_DELAY_UI);
         sendPosture(true);
     }
-    @Override protected void onPause() { super.onPause(); visible = false; if (preview != null) preview.onPause(); if (hinge != null) sensors.unregisterListener(this); }
+    @Override protected void onPause() { super.onPause(); visible = false; pausedAt = SystemClock.elapsedRealtime(); if (preview != null) preview.onPause(); if (hinge != null) sensors.unregisterListener(this); }
 
     // Fold posture for the UI: hinge angle (TYPE_HINGE_ANGLE, -1 when the device has
     // none) plus the physical screen centre in WebView CSS pixels, which is where a
@@ -141,7 +152,7 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         js("window.native&&native.posture&&native.posture(" + (hinge == null ? -1 : Math.round(hingeAngle)) + "," + geom + ")");
     }
     @Override public void onBackPressed() { js("window.native&&native.back?native.back():0", r -> { if (!"true".equals(r)) super.onBackPressed(); }); }
-    @Override protected void onDestroy() { for (HttpURLConnection c : streams.values()) c.disconnect(); pool.shutdownNow(); web.destroy(); if (preview != null) preview.destroy(); super.onDestroy(); }
+    @Override protected void onDestroy() { for (HttpURLConnection c : streams.values()) c.disconnect(); pool.shutdownNow(); if (web != null) web.destroy(); if (preview != null) preview.destroy(); super.onDestroy(); }
 
     private void handleIntent(Intent i) {
         if (i == null || !Intent.ACTION_SEND.equals(i.getAction())) return;
@@ -160,7 +171,7 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
     }
 
     private void js(String code) { js(code, null); }
-    private void js(String code, ValueCallback<String> cb) { main.post(() -> { if (!isDestroyed()) web.evaluateJavascript(code, cb); }); }
+    private void js(String code, ValueCallback<String> cb) { main.post(() -> { if (!isDestroyed() && web != null) web.evaluateJavascript(code, cb); }); }
 
     // ---------- the preview pane ----------
     // A plain WebView: http/https only, no file://, no content://, no bridge. Pages previewed
@@ -174,6 +185,10 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         s.setSupportZoom(false);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE); // dev servers pull http assets
         v.setWebViewClient(new WebViewClient() {
+            @Override public boolean onRenderProcessGone(WebView w, RenderProcessGoneDetail d) {
+                if (w == preview) { root.removeView(preview); preview.destroy(); preview = buildPreview(); preview.setVisibility(android.view.View.GONE); root.addView(preview, new FrameLayout.LayoutParams(1, 1)); }
+                return true;
+            }
             @Override public boolean shouldOverrideUrlLoading(WebView w, WebResourceRequest req) {
                 Uri u = req.getUrl();
                 String scheme = u == null ? null : u.getScheme();
@@ -346,7 +361,7 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         }
         @JavascriptInterface public void cancel(String id) { HttpURLConnection c = streams.remove(id); if (c != null) pool.execute(c::disconnect); }
 
-        @JavascriptInterface public void haptic() { main.post(() -> web.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)); }
+        @JavascriptInterface public void haptic() { main.post(() -> { if (web != null) web.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP); }); }
         @JavascriptInterface public void copy(String t) { getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("DSHA", t)); }
         @JavascriptInterface public void share(String t) { main.post(() -> startActivity(Intent.createChooser(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, t), null))); }
         @JavascriptInterface public void notify(String title, String text) { main.post(() -> notifyUser(title, text)); }
@@ -383,6 +398,13 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
             main.post(() -> { try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); } catch (Exception ignored) {} });
         }
         @JavascriptInterface public boolean visible() { return visible; }
+        // A run is live: hold the CPU and keep this process unfrozen until dsh goes idle (see RunService).
+        @JavascriptInterface public void keepAwake() { RunService.start(MainActivity.this, base(), token()); }
+        @JavascriptInterface public boolean batteryExempt() { return getSystemService(PowerManager.class).isIgnoringBatteryOptimizations(getPackageName()); }
+        @JavascriptInterface public void askBatteryExempt() {
+            main.post(() -> { try { startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName()))); }
+                catch (Exception e) { try { startActivity(new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)); } catch (Exception ignored) {} } });
+        }
     }
 
     private String BuildConfigVersion() {

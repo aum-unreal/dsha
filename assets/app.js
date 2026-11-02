@@ -43,7 +43,9 @@ window.native = {
   paired(ok, err) { pairDone?.(ok, err); },
   shared(t) { sharedText(t); },
   back() { if (previewShown() && previewUrl && window.Native?.previewBack?.()) return true; if (document.body.classList.contains('sheet')) { closeSheet(); return true; } if (document.body.classList.contains('agside')) { if (agView.sel) { agView.sel = null; renderAgents($('#agsideBody'), true); } else agSide(false); return true; } if (document.body.classList.contains('paged')) { closePage(); return true; } if (document.body.classList.contains('drawer')) { drawer(false); return true; } return false; },
-  resume() { if (S.cur) resync(); refreshSessions(); },
+  // After time in the background, rebuild the open session from dsh's snapshot instead of patching
+  // the stream back together: whatever happened while the phone was locked, the transcript comes back whole.
+  resume(away = 0) { if (S.cur) away > 15000 ? load(S.cur.id).catch(() => resync()) : resync(); refreshSessions(); },
 };
 const local = { get: k => { try { return localStorage.getItem('dsha.' + k) || ''; } catch { return ''; } }, set: (k, v) => { try { localStorage.setItem('dsha.' + k, v); } catch {} } };
 // In a browser, ?standalone=1 stands in for the Standalone build (tests): the built-in backend, no native side.
@@ -329,9 +331,14 @@ async function decide(it, d) {
 }
 
 /* ---------- sessions ---------- */
+let loadGen = 0;
 async function load(id) {
   S.close?.(); S.close = null;
-  const s = await api('GET', '/api/sessions/' + id);
+  // One load at a time: an older one finishing late would draw a stale snapshot and leave a second stream open.
+  const my = ++loadGen; S.loading = true;
+  let s;
+  try { s = await api('GET', '/api/sessions/' + id); } finally { if (my === loadGen) S.loading = false; }
+  if (my !== loadGen) return;
   S.cur = s; S.seq = s.live.fromSeq; S.todos = s.todos || []; S.sel = null;
   local.set('last', id);
   fromMessages(s.messages, s.meta);
@@ -358,7 +365,7 @@ function listen() {
   });
 }
 async function resync() {
-  if (!S.cur) return;
+  if (!S.cur || S.loading) return;
   try {
     const s = await api('GET', '/api/sessions/' + S.cur.id);
     conn(true);
@@ -367,7 +374,7 @@ async function resync() {
     if (!S.close) listen();
   } catch { conn(false); if (!S.close) setTimeout(resync, 4000); }
 }
-async function refreshSessions() { try { S.sessions = await api('GET', '/api/sessions'); renderSessions(); conn(true); } catch { conn(false); } }
+async function refreshSessions() { try { S.sessions = await api('GET', '/api/sessions'); if (S.sessions.some(x => x.running)) N?.keepAwake?.(); renderSessions(); conn(true); } catch { conn(false); } }
 function renderSessions(box = $('#sessions')) {
   if (box.id === 'sessions' && layout.mode === 'wide' && S.itab === 'sessions') renderSessions($('#ibody'));
   box.textContent = '';
@@ -433,6 +440,7 @@ function todos() {
   box.firstChild.onclick = () => { S.todosOpen = !S.todosOpen; todos(); };
 }
 function setRunning(r) {
+  if (r && !S.running) N?.keepAwake?.();
   S.running = r;
   syncSend();
   document.body.classList.toggle('running', r);
@@ -996,7 +1004,7 @@ async function settingsSheet() {
     <button class="secondary wide" data-a="key">Verify and save key</button><p class="hint">${bi ? 'Stored only inside this app.' : 'Stored only on the backend, in <code>~/.config/deepseek/key</code>.'}</p>
     <h4>Defaults for new sessions</h4>
     <div class="rows"><button data-a="defs">${I.gear}<span>${esc(S.cfg ? `${modelName(S.cfg.model)} · ${S.cfg.thinking === false ? 'no thinking' : S.cfg.effort + ' thinking'} · ${MODES[S.cfg.mode]?.[0] || S.cfg.mode}` : 'Unknown')}</span></button><button data-a="dcwd">${I.folder}<span>${esc(short(S.cfg?.cwd || ''))}</span></button></div>
-    ${N ? `<h4>Notifications</h4><button class="secondary wide" data-a="notif">Allow notifications</button><p class="hint">Get notified when a run finishes or needs approval while DSHA is in the background.</p>` : ''}
+    ${N ? `<h4>Notifications</h4><button class="secondary wide" data-a="notif">Allow notifications</button><p class="hint">Get notified when a run finishes or needs approval while DSHA is in the background.</p><h4>Screen off</h4><div class="kvs"><div class="kv"><span>Battery</span><b>${N.batteryExempt?.() ? 'Unrestricted' : 'Optimised'}</b></div></div>${N.batteryExempt?.() ? '' : '<button class="secondary wide" data-a="battery">Let runs continue when locked</button>'}<p class="hint">During a run DSHA keeps the phone awake until dsh is idle. Android battery optimisation can still pause it; set DSHA${c.backend === 'builtin' ? '' : ' and Termux'} to Unrestricted.</p>` : ''}
     <h4>About</h4><div class="kvs"><div class="kv"><span>DSHA</span><b>${esc(c.version)}</b></div><div class="kv"><span>dsh</span><b>${esc(S.health?.version || 'Not connected')}</b></div></div><div class="rows" style="margin-top:10px"><button data-a="agent">${I.book}<span>Plugins, skills and instructions</span></button><button data-a="lic">${I.file}<span>Third-party licences</span></button></div>`, {
     backend: el => { if (el.dataset.v === c.backend) return; haptic(); N?.setBackend(el.dataset.v); closeSheet(); S.cur = null; boot(); },
     restart: () => { haptic(); N?.restartBackend(); closeSheet(); toast('Restarting dsh'); setTimeout(boot, 2500); },
@@ -1007,6 +1015,7 @@ async function settingsSheet() {
     key: async el => { const k = $('#fKey').value.trim(); if (!k) return; el.disabled = true; try { await api('PUT', '/api/key', { key: k }); toast('Key saved'); S.health = await api('GET', '/api/health'); settingsSheet(); } catch (e) { toast(e.message); el.disabled = false; } },
     defs: () => { const s = S.cur; S.cur = null; optionsSheet().finally(() => { S.cur = s; }); },
     dcwd: () => pickDir(S.cfg?.cwd, async d => { S.cfg = await api('PUT', '/api/config', { cwd: d }); toast('Default folder set'); }),
+    battery: () => { N?.askBatteryExempt?.(); closeSheet(); },
     notif: () => N.askNotifications(),
     agent: () => agentPage(),
     lic: async () => { const t = await fetch('vendor/LICENSES.txt').then(r => r.text()); sheet(`<h3>Licences</h3><pre style="white-space:pre-wrap;font-size:11px;color:var(--muted)">${esc(t)}</pre>`); },
