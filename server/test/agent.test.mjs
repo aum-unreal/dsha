@@ -156,6 +156,32 @@ test('reattach mid-run replays from fromSeq without duplicating messages', async
   assert.equal(evs.filter(e => e.type === 'text').map(e => e.d).join(''), 'part1 part2');
 });
 
+test('reattach mid-run at=step: finished steps come as messages, only the step in progress replays', async () => {
+  const s = (await api('POST', '/api/sessions', { cwd: work, mode: 'auto' })).json;
+  let release;
+  script = [
+    [delta({ reasoning_content: 'plan' }), delta({ tool_calls: [{ index: 0, id: 'k1', type: 'function', function: { name: 'bash', arguments: '{"command":"echo one"}' } }] })],
+    (res) => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(`data: ${JSON.stringify(delta({ content: 'step2 ' }))}\n\n`); release = () => { res.write(`data: ${JSON.stringify(delta({ content: 'done' }))}\n\n`); res.end('data: [DONE]\n\n'); }; },
+  ];
+  await api('POST', `/api/sessions/${s.id}/messages`, { text: 'go' });
+  for (let i = 0; i < 50 && !release; i++) await new Promise(r => setTimeout(r, 50));
+  await new Promise(r => setTimeout(r, 100));
+  const whole = (await api('GET', '/api/sessions/' + s.id)).json, snap = (await api('GET', `/api/sessions/${s.id}?at=step`)).json;
+  assert.equal(whole.messages.length, 0);                        // default (CLI): the run replays whole
+  assert.deepEqual(snap.messages.map(m => m.role), ['user', 'assistant', 'tool']);
+  assert.equal(snap.messages[1].reasoning_content, 'plan');
+  assert.ok(snap.live.fromSeq > whole.live.fromSeq);
+  assert.deepEqual(snap.live.queue, []);
+  const r = await fetch(`${base}/api/sessions/${s.id}/events?after=${snap.live.fromSeq}`, { headers: { authorization: 'Bearer tok' } });
+  release();
+  let buf = ''; const evs = [];
+  for await (const c of r.body) { buf += new TextDecoder().decode(c); if (buf.includes('"run_end"')) break; }
+  for (const b of buf.split('\n\n')) { const l = b.split('\n').find(x => x.startsWith('data: ')); if (l) evs.push(JSON.parse(l.slice(6))); }
+  assert.equal(evs[0].type, 'step_start');
+  assert.ok(!evs.some(e => e.type === 'tool_call' || e.type === 'user' || e.type === 'reasoning'));
+  assert.equal(evs.filter(e => e.type === 'text').map(e => e.d).join(''), 'step2 done');
+});
+
 test('rewind drops the turn and returns its text', async () => {
   const s = (await api('POST', '/api/sessions', { cwd: work })).json;
   script = [[delta({ content: 'a' })]]; await run(s.id, 'first');

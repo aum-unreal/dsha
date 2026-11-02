@@ -210,8 +210,11 @@ function argsText(it) {
   return JSON.stringify(a, null, 1);
 }
 
+// Durations end at the event that closed them (dsh's clock), not now: a reopened app replays the step
+// in progress in one burst, and timing that against now made a 3 s thought read as 15 minutes.
 function closeLive() {
-  for (const it of S.items) if (it.live) { it.live = false; if (it.t0) it.ms = Date.now() - it.t0; paint(it); }
+  const end = S.evT || Date.now();
+  for (const it of S.items) if (it.live) { it.live = false; if (it.t0) it.ms = Math.max(0, end - it.t0); paint(it); }
 }
 
 function fromMessages(msgs, meta = {}) {
@@ -246,7 +249,7 @@ function addFoot() {
 }
 
 function apply(ev) {
-  if (ev.seq <= S.seq) return; S.seq = ev.seq; S.lastEv = Date.now();
+  if (ev.seq <= S.seq) return; S.seq = ev.seq; S.lastEv = Date.now(); S.evT = ev.t || Date.now();
   const L = last();
   switch (ev.type) {
     case 'run_start': setRunning(true); clearApiErr(); break;
@@ -258,16 +261,16 @@ function apply(ev) {
     }
     case 'reasoning':
       countGen(ev.d);
-      if (L?.kind === 'think' && L.live) { L.text += ev.d; paint(L); } else { closeLive(); add({ kind: 'think', text: ev.d, live: true, t0: ev.t || Date.now() }); }
+      if (L?.kind === 'think' && L.live) { L.text += ev.d; paint(L); } else { closeLive(); add({ kind: 'think', text: ev.d, live: true, t0: S.evT }); }
       break;
     case 'text':
       countGen(ev.d);
-      if (L?.kind === 'text' && L.live) { L.text += ev.d; paint(L); } else { closeLive(); add({ kind: 'text', text: ev.d, live: true, t0: Date.now() }); }
+      if (L?.kind === 'text' && L.live) { L.text += ev.d; paint(L); } else { closeLive(); add({ kind: 'text', text: ev.d, live: true, t0: S.evT }); }
       break;
     case 'tool_call': {
       const p = ev.parent && tool(ev.parent);
-      if (p) { p.nTools++; paint(p); add({ kind: 'tool', id: ev.id, parent: ev.parent, name: ev.name, args: ev.args || {}, summary: ev.summary, status: 'run', output: '', t0: Date.now() }, p.subsEl); break; }
-      closeLive(); add({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args || {}, summary: ev.summary, status: 'run', output: '', t0: Date.now() }); break;
+      if (p) { p.nTools++; paint(p); add({ kind: 'tool', id: ev.id, parent: ev.parent, name: ev.name, args: ev.args || {}, summary: ev.summary, status: 'run', output: '', t0: S.evT }, p.subsEl); break; }
+      closeLive(); add({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args || {}, summary: ev.summary, status: 'run', output: '', t0: S.evT }); break;
     }
     case 'sub_step': { const p = tool(ev.parent); if (p) { p.step = ev.step; paint(p); } break; }
     case 'approval': { const t = tool(ev.id); if (t) { t.status = 'waiting'; paint(t); stick = true; } haptic(); if (!visible()) N?.notify('dsh needs approval', `${ev.name}: ${String(ev.summary).slice(0, 200)}`); break; }
@@ -325,7 +328,7 @@ function apply(ev) {
   }
 }
 // Live speed estimate for the model call in flight (about 4 chars a token); the usage event replaces it with the exact figure.
-function countGen(d) { if (S.gen) { S.gen.t0 ||= Date.now(); S.gen.chars += d.length; } }
+function countGen(d) { if (S.gen) { S.gen.t0 ||= S.evT || Date.now(); S.gen.chars += d.length; } }
 const tool = id => S.items.find(x => x.kind === 'tool' && x.id === id);
 // Index of the next user message as dsh's rewind counts it: every user message, steering ones included.
 // Turn index for the next user message, as dsh's rewind counts them. A pending bubble isn't a message yet: its POST may
@@ -359,13 +362,15 @@ async function load(id) {
   // One load at a time: an older one finishing late would draw a stale snapshot and leave a second stream open.
   const my = ++loadGen; S.loading = true;
   let s;
-  try { s = await api('GET', '/api/sessions/' + id); }
+  try { s = await api('GET', `/api/sessions/${id}?at=step`); }
   catch (e) { if (my === loadGen && S.cur?.id === id) setTimeout(() => { if (S.cur?.id === id && !S.close) resync(); }, 2000); throw e; } // never left with no stream
   finally { if (my === loadGen) S.loading = false; }
   if (my !== loadGen) return;
   S.cur = s; S.seq = s.live.fromSeq; S.loadSeq = s.live.seq; S.compacted = false; S.todos = s.todos || []; S.sel = null;
   local.set('last', id);
-  fromMessages(s.messages, s.meta);
+  S.evT = 0; fromMessages(s.messages, s.meta);
+  // Messages sent during the run and not yet read: their 'queued' events may predate the replay.
+  for (const q of s.live.queue || []) if (!S.readQ.has(q.id) && !S.queue.some(x => x.qid === q.id)) queuedAdd({ qid: q.id, text: q.text });
   if (s.meta?.error && !s.live.running) apiErr(s.meta.error);
   setRunning(s.live.running);
   header(); meter(); todos(); renderSessions(); emptyState();

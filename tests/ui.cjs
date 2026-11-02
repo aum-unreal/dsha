@@ -311,7 +311,7 @@ const stat = http.createServer((req, res) => {
 
     // A session begun before dsh 0.9.0: usage.cost only covers the calls since, so it is below the off-peak bound.
     // Show the off-peak..full-price range rather than understate the spend.
-    const sesUrl = `**/api/sessions/${await page.evaluate(() => localStorage.getItem('dsha.last'))}`;
+    const sesUrl = new RegExp(`/api/sessions/${await page.evaluate(() => localStorage.getItem('dsha.last'))}(\\?|$)`);
     await page.route(sesUrl, async rt => { const res = await rt.fetch(), j = await res.json(); j.usage = { ...j.usage, cost: 0.001, costOff: 0.5, costPeak: 1 }; rt.fulfill({ response: res, json: j }); });
     await page.reload(); await page.locator('.md', { hasText: 'Read it 45 times.' }).waitFor();
     await page.waitForFunction(() => /\$0\.500–\$1\.000/.test(document.querySelector('#meter').textContent));

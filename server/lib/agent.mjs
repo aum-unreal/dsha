@@ -72,7 +72,7 @@ export class Runtime {
     s.messages ??= []; s.meta ??= {}; s.allow ??= []; s.todos ??= []; s.usage ??= { hit: 0, miss: 0, out: 0, reasoning: 0, cost: 0, lastPrompt: 0 };
     this.s = s; this.config = config; this.mcp = mcp;
     this.events = []; this.seq = 0; this.subs = new Set();
-    this.running = false; this.abort = null; this.waiting = new Map(); this.subStats = new Map(); this.runBase = s.messages.length; this.runSeq = 0;
+    this.running = false; this.abort = null; this.waiting = new Map(); this.subStats = new Map(); this.runBase = s.messages.length; this.runSeq = 0; this.stepBase = this.runBase; this.stepSeq = 0;
     this.queue = []; // live steering: messages sent during a run, read at the next step boundary
     if (this.repair()) this.save();
   }
@@ -111,9 +111,14 @@ export class Runtime {
     for (const ev of this.events) if (ev.seq > after) f(ev);
     this.subs.add(f); return () => this.subs.delete(f);
   }
-  snapshot() {
-    const s = this.s;
-    return { ...s, messages: this.running ? s.messages.slice(0, this.runBase) : s.messages, live: { running: this.running, seq: this.seq, fromSeq: this.running ? this.runSeq - 1 : this.seq, waiting: [...this.waiting.keys()] } };
+  // Mid-run, a snapshot holds the messages before the run and the client replays the run's events.
+  // at='step' (the app) holds every finished step instead and replays only the step in progress: a long
+  // run is hundreds of thousands of token events, and replaying them all on each reopen is slow.
+  snapshot(at) {
+    const s = this.s, step = at === 'step' && this.running && this.stepSeq > this.runSeq;
+    const base = !this.running ? s.messages.length : step ? this.stepBase : this.runBase;
+    const fromSeq = !this.running ? this.seq : (step ? this.stepSeq : this.runSeq) - 1;
+    return { ...s, messages: s.messages.slice(0, base), live: { running: this.running, seq: this.seq, fromSeq, waiting: [...this.waiting.keys()], queue: this.queue.map(q => ({ id: q.id, text: q.text })) } };
   }
   // Never throws: a full or read-only disk must not take the run (or dsh) down. The user hears once per cause.
   save() {
@@ -157,7 +162,7 @@ export class Runtime {
     if (this.compacting) throw new Error('Compacting the conversation: wait for it to finish, or stop it');
     if (!readKey()) throw new Error('No DeepSeek API key. Set one in DSHA settings or write it to ~/.config/deepseek/key');
     this.repair();
-    this.runBase = this.s.messages.length;
+    this.runBase = this.stepBase = this.s.messages.length;
     this.running = true; this.abort = new AbortController();
     this.runSeq = this.emit('run_start', { runBase: this.runBase, retry: text == null }).seq;
     try {
@@ -212,7 +217,7 @@ export class Runtime {
       // MCP tools are re-listed each step: a call can enable more of them.
       const tools = this.mcp ? [...builtin, ...await this.mcp.schemas(new Set(Object.keys(TOOLS)))] : builtin;
       if (s.usage.lastPrompt > COMPACT_AT) await this.compact(ds, signal);
-      this.emit('step_start', { step });
+      this.stepBase = s.messages.length; this.stepSeq = this.emit('step_start', { step }).seq;
       let r0 = 0, rMs = 0, f0 = 0;
       const thought = () => { f0 ||= Date.now(); if (r0 && !rMs) rMs = Date.now() - r0; };
       // Model and folder are read once per step: a mid-run change applies from the next step, which is
@@ -414,6 +419,7 @@ Work on your own: you cannot ask the user or the main agent anything, and the us
     this.save();
     const ev = this.emit('compacted', { summary: message.content });
     if (this.running) this.runSeq = ev.seq + 1;
+    this.stepBase = this.runBase; this.stepSeq = 0;
     return true;
   }
 }

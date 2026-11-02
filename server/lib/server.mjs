@@ -15,7 +15,7 @@ import { systemPrompt } from './agent.mjs';
 import { listAgents, readAgent, saveAgent, setAgent, setClaudeAgents, deleteAgent } from './agents.mjs';
 import { TOOLS, editInCwd } from './tools.mjs';
 
-export const VERSION = '0.10.0';
+export const VERSION = '0.10.1';
 const BOOT = crypto.randomBytes(6).toString('hex'); // tells a client the server restarted (event seqs start again)
 
 export function createServer({ config = loadConfig } = {}) {
@@ -105,7 +105,7 @@ export function createServer({ config = loadConfig } = {}) {
       if (!isDir(cwd)) throw httpErr(400, 'Not a directory: ' + cwd);
       if (isTemp(cwd)) throw httpErr(400, tempMsg(cwd));
       return createSession(cfg, { ...pick(b, ['title', 'model', 'effort', 'mode', 'thinking']), cwd }); }],
-    ['GET', /^\/api\/sessions\/(\w+)$/, ([id]) => rt(id).snapshot()],
+    ['GET', /^\/api\/sessions\/(\w+)$/, q => rt(q[0]).snapshot(q.query.get('at'))],
     ['PATCH', /^\/api\/sessions\/(\w+)$/, ([id], b) => {
       const r = rt(id), p = pick(b, ['title', 'model', 'effort', 'mode', 'thinking', 'cwd']);
       if (p.cwd) { p.cwd = path.resolve(expand(p.cwd)); if (!isDir(p.cwd)) throw httpErr(400, 'Not a directory: ' + p.cwd); }
