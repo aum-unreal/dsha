@@ -42,10 +42,12 @@ window.native = {
   end(id, err) { const s = streams.get(id); streams.delete(id); s?.end(err); },
   paired(ok, err) { pairDone?.(ok, err); },
   shared(t) { sharedText(t); },
-  back() { if (previewShown() && previewUrl && window.Native?.previewBack?.()) return true; if (document.body.classList.contains('sheet')) { closeSheet(); return true; } if (document.body.classList.contains('agside')) { if (agView.sel) { agView.sel = null; renderAgents($('#agsideBody'), true); } else agSide(false); return true; } if (document.body.classList.contains('paged')) { closePage(); return true; } if (document.body.classList.contains('drawer')) { drawer(false); return true; } return false; },
+  back() { if (previewShown() && !overlaysOpen() && previewUrl && window.Native?.previewBack?.()) return true; if (document.body.classList.contains('sheet')) { closeSheet(); return true; } if (document.body.classList.contains('agside')) { if (agView.sel) { agView.sel = null; renderAgents($('#agsideBody'), true); } else agSide(false); return true; } if (document.body.classList.contains('paged')) { closePage(); return true; } if (document.body.classList.contains('drawer')) { drawer(false); return true; } return false; },
   // After time in the background, rebuild the open session from dsh's snapshot instead of patching
   // the stream back together: whatever happened while the phone was locked, the transcript comes back whole.
-  resume(away = 0) { if (S.cur) away > 15000 ? load(S.cur.id).catch(() => resync()) : resync(); refreshSessions(); },
+  resume(away = 0) { if (S.cur) away > 15000 ? load(S.cur.id).catch(() => {}) : resync(); refreshSessions();
+    // Back from Android's all-files screen: the open Settings sheet still shows the old access.
+    const sh = $('#sheet'); if (!sh.hidden && sh.dataset.k === 'settings' && sh.dataset.af !== String(!!settings().allFiles)) settingsSheet(); },
 };
 const local = { get: k => { try { return localStorage.getItem('dsha.' + k) || ''; } catch { return ''; } }, set: (k, v) => { try { localStorage.setItem('dsha.' + k, v); } catch {} } };
 // In a browser, ?standalone=1 stands in for the Standalone build (tests): the built-in backend, no native side.
@@ -98,11 +100,17 @@ const md = window.markdownit({ linkify: true, breaks: false, highlight(code, lan
 function renderMd(el, text) {
   el.innerHTML = DOMPurify.sanitize(md.render(text || ''));
   for (const pre of el.querySelectorAll('pre')) { const lang = (pre.querySelector('code')?.className.match(/language-(\w+)/) || [])[1]; if (lang) pre.dataset.lang = lang; const b = h('button', 'cp', I.copy); b.ariaLabel = 'Copy code'; b.onclick = () => copy(pre.querySelector('code')?.innerText || pre.innerText); pre.append(b); }
-  for (const a of el.querySelectorAll('a')) { a.target = '_blank'; if (isLocalUrl(a.href)) a.onclick = e => { if (layout.mode === 'wide') { e.preventDefault(); haptic(); showPreview(a.href); } }; }
+  for (const a of el.querySelectorAll('a')) {
+    // A relative link ([README](README.md)) resolves against the app's own origin and would navigate the UI away:
+    // keep only links that leave the app (http(s) elsewhere, mail, phone); the rest stay as plain text.
+    let u = null; try { u = new URL(a.getAttribute('href') || '', location.href); } catch {}
+    if (!u || u.origin === location.origin || !/^(https?|mailto|tel):$/.test(u.protocol)) { a.title = a.getAttribute('href') || ''; a.removeAttribute('href'); a.classList.add('nolink'); continue; }
+    a.target = '_blank'; if (isLocalUrl(a.href)) a.onclick = e => { if (layout.mode === 'wide') { e.preventDefault(); haptic(); showPreview(a.href); } };
+  }
 }
 
 /* ---------- state ---------- */
-const S = { cur: null, items: [], seq: 0, running: false, close: null, sessions: [], health: null, cfg: null, retry: 0, todos: [], todosOpen: false };
+const S = { cur: null, items: [], seq: 0, loadSeq: 0, running: false, close: null, sessions: [], health: null, cfg: null, retry: 0, todos: [], todosOpen: false, readQ: new Set() };
 const log = $('#log'), scroller = $('#scroller');
 
 function nearBottom() { return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90; }
@@ -112,7 +120,7 @@ function follow() { if (stick) scroller.scrollTop = scroller.scrollHeight; }
 $('#jump').innerHTML = I.down; $('#jump').onclick = () => { stick = true; scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' }); };
 
 /* ---------- items ---------- */
-function add(item, box = log) { S.items.push(item); item.el = build(item); box.append(item.el); paint(item); return item; }
+function add(item, box = log) { S.items.push(item); item.el = build(item); box.append(item.el); paint(item); if (S.items.length === 1) emptyState(); return item; }
 function last() { return S.items[S.items.length - 1]; }
 function build(it) {
   switch (it.kind) {
@@ -222,7 +230,8 @@ function fromMessages(msgs, meta = {}) {
       }
     } else if (m.role === 'tool' && tools[m.tool_call_id]) {
       const t = tools[m.tool_call_id], mm = meta[m.tool_call_id] || {};
-      Object.assign(t, { content: clipText(m.content), status: mm.denied ? 'denied' : mm.ok === false ? 'fail' : 'ok', ms: mm.ms }, mm.agent ? { agent: mm.agent, stats: { model: mm.model, steps: mm.steps, in: mm.in, out: mm.out } } : {}); paint(t);
+      // No meta for a call skipped by a stop (it never ran): not a success.
+      Object.assign(t, { content: clipText(m.content), status: mm.denied ? 'denied' : mm.ok === false || !meta[m.tool_call_id] && /^Cancelled: /.test(m.content) ? 'fail' : 'ok', ms: mm.ms }, mm.agent ? { agent: mm.agent, stats: { model: mm.model, steps: mm.steps, in: mm.in, out: mm.out } } : {}); paint(t);
     }
   });
   addFoot();
@@ -240,11 +249,11 @@ function apply(ev) {
   if (ev.seq <= S.seq) return; S.seq = ev.seq; S.lastEv = Date.now();
   const L = last();
   switch (ev.type) {
-    case 'run_start': setRunning(true); break;
+    case 'run_start': setRunning(true); clearApiErr(); break;
     case 'step_start': S.gen = { t0: 0, chars: 0 }; break;
     case 'user': {
       const p = S.items.find(x => x.kind === 'user' && x.pending);
-      if (p) { p.pending = false; p.text = ev.text; paint(p); } else add({ kind: 'user', text: ev.text, turn: S.items.filter(x => x.kind === 'user').length });
+      if (p) { p.pending = false; p.text = ev.text; p.turn ??= S.items.filter(x => x.kind === 'user').indexOf(p); paint(p); } else add({ kind: 'user', text: ev.text, turn: userTurns() });
       break;
     }
     case 'reasoning':
@@ -272,14 +281,15 @@ function apply(ev) {
       break;
     }
     case 'unqueued': {
-      const q = S.queue.find(x => x.qid === ev.id); if (q) queuedDrop(q);
+      S.readQ.add(ev.id); const q = S.queue.find(x => x.qid === ev.id); if (q) queuedDrop(q);
       // A stop or failure hands unread messages back to the input box.
       if (ev.returned && ev.text) { input.value = ev.text + (input.value ? '\n\n' + input.value : ''); grow(); syncSend(); local.set('draft', input.value); toast('Not sent: the run ended first'); }
       break;
     }
     case 'steer':
+      for (const id of ev.ids) S.readQ.add(id);
       for (const q of S.queue.filter(x => ev.ids.includes(x.qid))) queuedDrop(q);
-      closeLive(); add({ kind: 'user', text: ev.text, steer: true, turn: S.items.filter(x => x.kind === 'user').length }); stick = true;
+      closeLive(); add({ kind: 'user', text: ev.text, steer: true, turn: userTurns() }); stick = true;
       break;
     case 'usage': if (S.cur) { S.cur.usage = ev.total; meter(); } S.gen = null; break;
     case 'todos': S.todos = ev.todos; todos(); break;
@@ -303,9 +313,13 @@ function apply(ev) {
       break;
     }
     case 'session': if (S.cur) { Object.assign(S.cur, ev.patch); header(); meter(); } break;
-    case 'compacted': load(S.cur.id); break;
+    // Only a compaction this load has not seen: the snapshot already holds it, and the replay from
+    // fromSeq repeats the event, which would otherwise reload in a loop for the rest of the run.
+    case 'compacted': S.compacted = S.running; if (ev.seq > S.loadSeq) load(S.cur.id).catch(() => {}); break;
     case 'run_end':
       closeLive(); setRunning(false); addFoot(); refreshSessions(); refreshBalance(true); reloadPreviewAfterRun();
+      // A run that compacted mid-way was drawn from its events; redraw from the stored messages so turns match dsh's.
+      if (S.cur && S.compacted) load(S.cur.id).catch(() => {});
       if (!visible() && ev.reason !== 'stopped') { const t = [...S.items].reverse().find(x => x.kind === 'text'); N?.notify(S.cur?.title || 'dsh', t ? t.text.slice(0, 300) : 'Finished'); }
       break;
   }
@@ -313,21 +327,29 @@ function apply(ev) {
 // Live speed estimate for the model call in flight (about 4 chars a token); the usage event replaces it with the exact figure.
 function countGen(d) { if (S.gen) { S.gen.t0 ||= Date.now(); S.gen.chars += d.length; } }
 const tool = id => S.items.find(x => x.kind === 'tool' && x.id === id);
+// Index of the next user message as dsh's rewind counts it: every user message, steering ones included.
+// Turn index for the next user message, as dsh's rewind counts them. A pending bubble isn't a message yet: its POST may
+// still come back queued, so a steer read meanwhile must not count it.
+const userTurns = () => S.items.filter(x => x.kind === 'user' && !x.pending).length;
 
 // DeepSeek failures, by the kind dsh gives them. The card stays at the end of the session until the next run.
 const API_ERR = { network: "Can't reach DeepSeek", busy: 'DeepSeek is overloaded', rate: 'DeepSeek is rate limiting', auth: 'DeepSeek rejected the API key', balance: 'DeepSeek balance is used up', bad: 'DeepSeek refused the request' };
-function apiErr(e) { for (const x of S.items.filter(x => x.kind === 'apierr')) { x.el.remove(); S.items.splice(S.items.indexOf(x), 1); } return add({ kind: 'apierr', kind2: e.kind || 'bad', text: e.message }); }
+const dropItem = it => { const i = S.items.indexOf(it); if (i < 0) return; it.el.remove(); S.items.splice(i, 1); };
+function clearApiErr() { for (const x of S.items.filter(x => x.kind === 'apierr')) dropItem(x); strip(); }
+function apiErr(e) { clearApiErr(); return add({ kind: 'apierr', kind2: e.kind || 'bad', text: e.message }); }
 async function retryRun(it) {
   haptic(); if (S.running) return;
-  try { await api('POST', `/api/sessions/${S.cur.id}/retry`); it.el.remove(); S.items.splice(S.items.indexOf(it), 1); strip(); }
+  try { await api('POST', `/api/sessions/${S.cur.id}/retry`); dropItem(it); strip(); }
   catch (e) { toast(e.message); }
 }
 
 async function decide(it, d) {
   haptic();
-  it.status = d === 'deny' ? 'denied' : 'run'; paint(it);
-  try { await api('POST', `/api/sessions/${S.cur.id}/approve`, { id: it.id, decision: d }); if (d === 'always') toast(`${tname(it.name)} allowed for this session`); }
-  catch (e) { toast(e.message); }
+  const was = it.status; it.status = d === 'deny' ? 'denied' : 'run'; paint(it);
+  // Until dsh has the answer the call is still waiting: on failure, give the buttons back.
+  const undo = () => { if (it.status === (d === 'deny' ? 'denied' : 'run')) { it.status = was; paint(it); } };
+  try { const r = await api('POST', `/api/sessions/${S.cur.id}/approve`, { id: it.id, decision: d }); if (r.ok === false) { undo(); return toast('dsh is no longer waiting on this'); } if (d === 'always') toast(`${tname(it.name)} allowed for this session`); }
+  catch (e) { undo(); toast(e.message); }
 }
 
 /* ---------- sessions ---------- */
@@ -337,9 +359,11 @@ async function load(id) {
   // One load at a time: an older one finishing late would draw a stale snapshot and leave a second stream open.
   const my = ++loadGen; S.loading = true;
   let s;
-  try { s = await api('GET', '/api/sessions/' + id); } finally { if (my === loadGen) S.loading = false; }
+  try { s = await api('GET', '/api/sessions/' + id); }
+  catch (e) { if (my === loadGen && S.cur?.id === id) setTimeout(() => { if (S.cur?.id === id && !S.close) resync(); }, 2000); throw e; } // never left with no stream
+  finally { if (my === loadGen) S.loading = false; }
   if (my !== loadGen) return;
-  S.cur = s; S.seq = s.live.fromSeq; S.todos = s.todos || []; S.sel = null;
+  S.cur = s; S.seq = s.live.fromSeq; S.loadSeq = s.live.seq; S.compacted = false; S.todos = s.todos || []; S.sel = null;
   local.set('last', id);
   fromMessages(s.messages, s.meta);
   if (s.meta?.error && !s.live.running) apiErr(s.meta.error);
@@ -355,7 +379,7 @@ function listen() {
     // A hole in the sequence means dsh no longer holds events we never saw: rebuild from the
     // snapshot rather than draw a reply's tail with no prompt. Once per hole, so a dsh that
     // still trims can't loop us.
-    if (list[0]?.seq > S.seq + 1 && S.hole !== S.seq) { S.hole = S.seq; S.close?.(); S.close = null; load(id); return; }
+    if (list[0]?.seq > S.seq + 1 && S.hole !== S.seq) { S.hole = S.seq; S.close?.(); S.close = null; load(id).catch(() => {}); return; }
     S.retry = 0; for (const ev of list) apply(ev); follow(); conn(true);
   }, err => {
     if (S.cur?.id !== id) return;
@@ -366,13 +390,13 @@ function listen() {
 }
 async function resync() {
   if (!S.cur || S.loading) return;
-  try {
-    const s = await api('GET', '/api/sessions/' + S.cur.id);
-    conn(true);
-    // Server restarted, we missed a run, or a run ended without its run_end reaching us.
-    if (s.live.seq < S.seq || !S.close && s.live.fromSeq > S.seq || S.running && !s.live.running && s.live.seq > S.seq) return load(S.cur.id);
-    if (!S.close) listen();
-  } catch { conn(false); if (!S.close) setTimeout(resync, 4000); }
+  let s;
+  try { s = await api('GET', '/api/sessions/' + S.cur.id); conn(true); }
+  catch { conn(false); if (!S.close) setTimeout(resync, 4000); return; }
+  // Server restarted, we missed a run, or a run ended without its run_end reaching us.
+  // A failed load schedules its own retry, so it isn't retried here too (that would fork a second poll chain).
+  if (s.live.seq < S.seq || !S.close && s.live.fromSeq > S.seq || S.running && !s.live.running && s.live.seq > S.seq) return load(S.cur.id).catch(() => {});
+  if (!S.close) listen();
 }
 async function refreshSessions() { try { S.sessions = await api('GET', '/api/sessions'); if (S.sessions.some(x => x.running)) N?.keepAwake?.(); renderSessions(); conn(true); } catch { conn(false); } }
 function renderSessions(box = $('#sessions')) {
@@ -418,12 +442,15 @@ function header() {
   const m = s?.mode || S.cfg?.mode || 'ask';
   $('#modeChip').className = 'chip ' + m; $('#modeChip').textContent = MODES[m][0];
 }
+// usage.cost (dsh 0.9.0+) is exact only if it covers the whole session. A session begun before 0.9.0 starts cost at its
+// first newer call, so cost < costOff (the cheapest the whole session could have been): show the off-peak..peak range then.
+const spentExact = u => u.cost != null && u.cost + 1e-9 >= (u.costOff || 0);
 function meter() {
   const s = S.cur; if (!s) { $('#meter').textContent = ''; return; }
   const u = s.usage || {}, ctx = u.lastPrompt || 0;
   const k = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
-  const c = u.costPeak || 0;
-  $('#meter').innerHTML = `<span><b>${esc(modelName(s.model))}</b> · ${s.thinking === false ? 'no thinking' : esc(s.effort) + ' thinking'}</span><span><b>${k(ctx)}</b> context · ${u.tps ? `<b>${u.tps}</b> tok/s · ` : ''}<i class="mx">${k((u.hit || 0) + (u.miss || 0))} in · ${k(u.out || 0)} out · </i><b>$${c < 0.01 ? c.toFixed(4) : c.toFixed(3)}</b></span>`; ui();
+  const c = v => '$' + (v < 0.01 ? v.toFixed(4) : v.toFixed(3));
+  $('#meter').innerHTML = `<span><b>${esc(modelName(s.model))}</b> · ${s.thinking === false ? 'no thinking' : esc(s.effort) + ' thinking'}</span><span><b>${k(ctx)}</b> context · ${u.tps ? `<b>${u.tps}</b> tok/s · ` : ''}<i class="mx">${k((u.hit || 0) + (u.miss || 0))} in · ${k(u.out || 0)} out · </i><b>${spentExact(u) ? c(u.cost) : c(u.costOff || 0) + '–' + c(u.costPeak || 0)}</b></span>`; ui();
 }
 const cap = t => String(t || '').replace(/^./, c => c.toUpperCase());
 const modelName = m => ({ 'deepseek-flash': 'Flash', 'deepseek-v4-pro': 'V4 Pro' }[m] || String(m).replace('deepseek-', ''));
@@ -554,23 +581,26 @@ async function send() {
   try {
     if (!S.cur) { const s = await api('POST', '/api/sessions', {}); await load(s.id); }
     input.value = ''; grow(); local.set('draft', ''); syncSend(); $('#slash').hidden = true;
-    add({ kind: 'user', text, pending: true }); emptyState(); stick = true; follow();
-    await api('POST', `/api/sessions/${S.cur.id}/messages`, { text });
+    const p = add({ kind: 'user', text, pending: true, turn: userTurns() }); emptyState(); stick = true; follow();
+    const r = await api('POST', `/api/sessions/${S.cur.id}/messages`, { text });
+    // A run had already started (a second Send before its run_start): dsh queued this one as steering.
+    if (r.queued) { dropItem(p); if (!S.readQ.has(r.queued) && !S.queue.some(x => x.qid === r.queued)) queuedAdd({ qid: r.queued, text }); }
   } catch (e) {
-    const p = S.items.find(x => x.pending); if (p) { p.el.remove(); S.items.splice(S.items.indexOf(p), 1); input.value = text; grow(); syncSend(); }
+    const p = S.items.find(x => x.pending); if (p) { dropItem(p); input.value = text; grow(); syncSend(); }
     toast(e.message); emptyState();
   }
 }
 // Live steering: mid-run, a message waits under the chat and dsh reads it after the current step
 // (its tool results, or the reply it is writing). It can be cancelled until then.
 async function steer(text) {
-  haptic();
+  haptic(); if (!S.cur) return;
   input.value = ''; grow(); local.set('draft', ''); syncSend(); $('#slash').hidden = true;
   const q = queuedAdd({ text }); stick = true; follow();
   try {
     const r = await api('POST', `/api/sessions/${S.cur.id}/messages`, { text });
     if (!r.queued) { queuedDrop(q); return; } // the run had just ended: it started a new one, whose user event draws the bubble
     const dup = S.queue.find(x => x !== q && x.qid === r.queued); if (dup) queuedDrop(dup);
+    if (S.readQ.has(r.queued)) { queuedDrop(q); return; } // dsh read it before this reply arrived
     q.qid = r.queued; paintQueued(q);
   } catch (e) { queuedDrop(q); input.value = text + (input.value ? '\n\n' + input.value : ''); grow(); syncSend(); toast(e.message); }
 }
@@ -582,13 +612,13 @@ function queuedAdd(q) {
   S.queue.push(q); $('#queue').append(q.el); paintQueued(q); return q;
 }
 function paintQueued(q) { q.el.querySelector('.qt').textContent = q.text; q.el.querySelector('.ql').textContent = q.qid ? 'Queued · read after this step' : 'Sending…'; q.el.querySelector('.qx').hidden = !q.qid; }
-function queuedDrop(q) { q.el.remove(); S.queue.splice(S.queue.indexOf(q), 1); }
+function queuedDrop(q) { q.el.remove(); const i = S.queue.indexOf(q); if (i >= 0) S.queue.splice(i, 1); }
 async function cancelQueued(q) {
   haptic();
   try { await api('DELETE', `/api/sessions/${S.cur.id}/queue/${q.qid}`); if (S.queue.includes(q)) queuedDrop(q); input.value = q.text + (input.value ? '\n\n' + input.value : ''); grow(); syncSend(); local.set('draft', input.value); }
   catch (e) { toast(e.message); }
 }
-async function stop() { haptic(); try { await api('POST', `/api/sessions/${S.cur.id}/stop`); } catch (e) { toast(e.message); } }
+async function stop() { haptic(); if (!S.cur) return setRunning(false); try { await api('POST', `/api/sessions/${S.cur.id}/stop`); } catch (e) { toast(e.message); } }
 async function compact() {
   if (!S.cur) return; if (S.running) return toast('Stop the run first');
   toast('Compacting…');
@@ -623,9 +653,11 @@ const cwdQ = () => 'cwd=' + encodeURIComponent(pageCwd());
 const sw = (on, attrs) => `<button class="switch${on ? ' on' : ''}" role="switch" aria-checked="${on}" ${attrs}><i></i></button>`;
 const kb = n => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
 
-function agentPage(tab = S.ptab || 'agents') {
+// The page also shows Usage (S.ptab 'usage'), so the last tab is only a default when it is one of these.
+function agentPage(tab = PTABS.some(t => t[0] === S.ptab) ? S.ptab : 'agents') {
+  if (!PTABS.some(t => t[0] === tab)) tab = 'agents';
   S.ptab = tab; drawer(false); closeSheet();
-  const page = $('#page'); page.hidden = false; document.body.classList.add('paged'); syncPreview();
+  const page = $('#page'); page.hidden = false; page.ariaLabel = 'Agent setup'; document.body.classList.add('paged'); syncPreview();
   $('#pageTitle').textContent = 'Agent'; $('#pageSub').textContent = 'For ' + short(pageCwd());
   $('#ptabs').innerHTML = PTABS.map(([k, l]) => `<button role="tab" data-t="${k}" class="${k === tab ? 'on' : ''}" aria-selected="${k === tab}">${l}</button>`).join('');
   $('#ptabs').querySelectorAll('button').forEach(b => b.onclick = () => { haptic(); agentPage(b.dataset.t); });
@@ -649,7 +681,8 @@ function pluginsTab() {
 function drawPlugins() {
   const box = $('#mcpList'); if (!box) return;
   if (!S.mcp.length) { box.innerHTML = '<div class="empty-note">No servers yet. Add one by URL (a server already running) or by the command that starts it.</div>'; return; }
-  box.innerHTML = `<div class="rows">${S.mcp.map((m, i) => { const [k, t] = mcpState(m); return `<button data-i="${i}"><span class="sdot ${k}"></span><span class="rx"><span class="r1">${esc(m.name)}</span><span class="r2">${esc(t)}</span></span>${I.chev}</button>`; }).join('')}</div>`;
+  // A broken mcp.json comes back as one status row: show its error, it is not a server to open.
+  box.innerHTML = `<div class="rows">${S.mcp.map((m, i) => { if (m.invalid) return `<div class="row"><span class="sdot down"></span><span class="rx"><span class="r1">mcp.json can't be read</span><span class="r2">${esc(m.error || '')}. Fix the file; until then no plugin changes are saved.</span></span></div>`; const [k, t] = mcpState(m); return `<button data-i="${i}"><span class="sdot ${k}"></span><span class="rx"><span class="r1">${esc(m.name)}</span><span class="r2">${esc(t)}</span></span>${I.chev}</button>`; }).join('')}</div>`;
   box.querySelectorAll('[data-i]').forEach(b => b.onclick = () => pluginSheet(S.mcp[+b.dataset.i]));
 }
 async function pluginSheet(m) {
@@ -668,13 +701,17 @@ async function pluginSheet(m) {
     box.innerHTML = tools.length ? `<div class="rows">${tools.map(t => `<div class="row"><span class="rx"><span class="r1 code">${esc(t.name)}</span><span class="r2">${esc(t.description.split('\n')[0] || 'No description')}</span></span>${t.readOnly ? '<span class="rv">Read only</span>' : ''}</div>`).join('')}</div>` : '<p class="hint">This server offers no tools.</p>';
   } catch {}
 }
+// The stdio command as one editable line, quoted so an argument with a space survives dsh splitting it again.
+// Needs dsh to report command and args; older ones send only the joined target.
+const shq = a => /^[^\s"']+$/.test(a) ? a : a.includes('"') ? `'${a}'` : `"${a}"`;
+const cmdLine = m => m.command ? [m.command, ...(m.args || [])].map(shq).join(' ') : m.target;
 function pluginForm(m) {
   let kind = m ? m.transport : 'http', risk = m?.risk || 'exec';
   const b = sheet(`<h3>${m ? 'Edit ' + esc(m.name) : 'Add server'}</h3>
     <label class="field"><span>Name</span><input id="mName" value="${esc(m?.name || '')}" ${m ? 'disabled' : ''} placeholder="files" autocapitalize="off" spellcheck="false"></label>
     ${seg('kind', [['http', 'By URL'], ['stdio', 'By command']], kind)}
     <label class="field" style="margin-top:14px" id="mUrlF"><span>URL</span><input id="mUrl" value="${esc(m?.transport === 'http' ? m.target : '')}" placeholder="http://127.0.0.1:9090/mcp" autocapitalize="off" spellcheck="false" inputmode="url"></label>
-    <label class="field" style="margin-top:14px" id="mCmdF"><span>Command</span><input id="mCmd" value="${esc(m?.transport === 'stdio' ? m.target : '')}" placeholder="npx -y @modelcontextprotocol/server-filesystem ~" autocapitalize="off" spellcheck="false"></label>
+    <label class="field" style="margin-top:14px" id="mCmdF"><span>Command</span><input id="mCmd" value="${esc(m?.transport === 'stdio' ? cmdLine(m) : '')}" placeholder="npx -y @modelcontextprotocol/server-filesystem ~" autocapitalize="off" spellcheck="false"></label>
     <label class="field"><span>Start command, optional</span><input id="mStart" value="${esc(m?.start || '')}" placeholder="Runs once when the server can't be reached" autocapitalize="off" spellcheck="false"></label>
     <h4>Tools without a read-only or destructive hint</h4>${seg('risk', Object.entries(RISK), risk)}
     <p class="hint">Read only tools run without asking. Others follow the session's permission mode.</p>
@@ -684,7 +721,10 @@ function pluginForm(m) {
     save: async el => {
       const name = (m?.name || $('#mName').value).trim(), body = { risk, start: $('#mStart').value.trim() };
       if (kind === 'http') body.url = $('#mUrl').value.trim(); else body.command = $('#mCmd').value.trim();
+      if (!m) body.create = true; // dsh refuses to replace an existing server under this name
       if (!/^[\w-]{1,40}$/.test(name)) return ($('#mErr').textContent = 'Name: letters, digits, dashes or underscores.');
+      // Adding under a name in use would replace that server and hand it the old one's environment.
+      if (!m && (S.mcp || []).some(x => x.name === name)) return ($('#mErr').textContent = `A server named ${name} already exists. Pick another name, or edit that one.`);
       el.disabled = true;
       try { S.mcp = await api('PUT', '/api/mcp/' + name, body); closeSheet(); toast(m ? 'Saved' : `${name} added`); pluginsTab(); }
       catch (e) { $('#mErr').textContent = e.message; el.disabled = false; }
@@ -741,18 +781,20 @@ async function agentSheet(id) {
 // a: an existing definition to edit (a.id set) or prefill a new one from (a.id null).
 function agentForm(a = {}) {
   const all = (S.agents?.tools || []).map(t => t.name);
-  let scope = a.source === 'project' ? 'project' : 'dsh', model = a.model === 'deepseek-flash' ? 'flash' : a.model === 'deepseek-v4-pro' ? 'pro' : 'inherit';
+  let scope = a.source === 'project' ? 'project' : 'dsh', model = a.model === 'deepseek-flash' ? 'flash' : a.model === 'deepseek-v4-pro' ? 'pro' : 'inherit', effort = a.effort || '';
   let picked = new Set(a.tools || []), preset = !a.tools ? 'all' : READ_TOOLS.every(n => picked.has(n)) && picked.size === READ_TOOLS.length ? 'read' : 'pick';
   const chips = () => `<div class="chips" id="agTools"${preset === 'pick' ? '' : ' hidden'}>${all.map(n => `<button type="button" data-a="tool" data-v="${esc(n)}" class="chip${picked.has(n) ? ' on' : ''}" aria-pressed="${picked.has(n)}">${esc(tname(n))}</button>`).join('')}</div>`;
   const b = sheet(`<h3>${a.id ? 'Edit ' + esc(a.name) : 'New subagent'}</h3>
     <label class="field"><span>Name</span><input id="agName" value="${esc(a.name || '')}" placeholder="code-reviewer" autocapitalize="off" spellcheck="false"></label>
     <label class="field"><span>Use it when</span><input id="agDesc" value="${esc(a.description || '')}" placeholder="Reviewing a change for bugs before it is committed"></label>
     <h4>Model</h4>${seg('model', [['inherit', 'Session'], ['flash', 'Flash'], ['pro', 'V4 Pro']], model)}
+    <h4>Thinking</h4>${seg('effort', [['', 'Session'], ['low', 'Low'], ['high', 'High'], ['max', 'Max']], effort)}
     <h4>Tools</h4>${seg('preset', [['all', 'All'], ['read', 'Read only'], ['pick', 'Choose']], preset)}${chips()}
     ${a.id ? '' : `<h4>Available in</h4>${seg('scope', [['dsh', 'All projects'], ['project', 'This project']], scope)}`}
     <label class="field" style="margin-top:16px"><span>System prompt</span><textarea id="agText" rows="9" placeholder="Who the subagent is, how it works, and what its final report must contain.">${esc(a.prompt || '')}</textarea></label>
     <button class="primary wide" data-a="save">${a.id ? 'Save' : 'Create subagent'}</button><div class="err-text" id="agErr"></div>`, {
     model: el => { model = el.dataset.v; on(el); },
+    effort: el => { effort = el.dataset.v; on(el); },
     scope: el => { scope = el.dataset.v; on(el); },
     preset: el => { preset = el.dataset.v; on(el); if (preset === 'read') picked = new Set(READ_TOOLS); $('#agTools').hidden = preset !== 'pick'; $('#agTools').querySelectorAll('.chip').forEach(c => { c.classList.toggle('on', picked.has(c.dataset.v)); c.ariaPressed = picked.has(c.dataset.v); }); },
     tool: el => { const n = el.dataset.v; picked.has(n) ? picked.delete(n) : picked.add(n); el.classList.toggle('on', picked.has(n)); el.ariaPressed = picked.has(n); },
@@ -760,7 +802,7 @@ function agentForm(a = {}) {
       const tools = preset === 'all' ? null : preset === 'read' ? READ_TOOLS : [...picked];
       if (tools && !tools.length) { $('#agErr').textContent = 'Pick at least one tool, or choose All.'; return; }
       el.disabled = true;
-      try { S.agents = await api('POST', '/api/agents', { cwd: pageCwd(), id: a.id || undefined, scope, name: $('#agName').value, description: $('#agDesc').value, model, tools, prompt: $('#agText').value }); closeSheet(); drawAgents(); toast(a.id ? 'Saved' : 'Subagent created'); }
+      try { S.agents = await api('POST', '/api/agents', { cwd: pageCwd(), id: a.id || undefined, scope, name: $('#agName').value, description: $('#agDesc').value, model, effort: effort || undefined, tools, prompt: $('#agText').value }); closeSheet(); drawAgents(); toast(a.id ? 'Saved' : 'Subagent created'); }
       catch (e) { $('#agErr').textContent = e.message; el.disabled = false; }
     },
   });
@@ -781,7 +823,7 @@ function drawSkills() {
     const list = skills.filter(x => x.source === src), [title, where] = SOURCES[src];
     const head = src === 'claude' ? `<div class="ghead"><div><h3>${title}</h3><p class="r2">${where}</p></div>${sw(claude, 'data-claude aria-label="Use Claude Code skills"')}</div>` : `<div class="ghead"><div><h3>${title}</h3><p class="r2">${where}</p></div></div>`;
     if (!list.length) return src === 'claude' ? '' : head + `<div class="empty-note">None yet.</div>`;
-    return head + `<div class="rows${src === 'claude' && !claude ? ' dim' : ''}">${list.map(x => `<div class="row"><button class="rx" data-open="${esc(x.id)}"><span class="r1">${esc(x.name)}${x.shadowed ? ' <span class="tag">Hidden by a project skill</span>' : ''}</span><span class="r2">${esc(x.description || 'No description')}</span></button>${sw(x.enabled, `data-id="${esc(x.id)}" aria-label="Use ${esc(x.name)}"` + (src === 'claude' && !claude ? ' disabled' : ''))}</div>`).join('')}</div>`;
+    return head + `<div class="rows${src === 'claude' && !claude ? ' dim' : ''}">${list.map(x => `<div class="row"><button class="rx" data-open="${esc(x.id)}"><span class="r1">${esc(x.name)}${x.shadowed ? ' <span class="tag">Hidden by another with this name</span>' : ''}</span><span class="r2">${esc(x.description || 'No description')}</span></button>${sw(x.enabled, `data-id="${esc(x.id)}" aria-label="Use ${esc(x.name)}"` + (src === 'claude' && !claude ? ' disabled' : ''))}</div>`).join('')}</div>`;
   };
   const on = skills.filter(x => x.enabled && !x.shadowed).length;
   pbody(`<p class="lead">Instructions for a kind of task. dsh sees each skill's name and description, and loads the full instructions when a task matches. ${on} in use.</p>
@@ -825,7 +867,8 @@ function skillForm() {
 }
 
 // Leave the page with a message started in the composer, for the user to finish or send.
-function askChat(text) { closeSheet(); closePage(); input.value = text; grow(); syncSend(); input.focus(); input.setSelectionRange(text.length, text.length); }
+// A draft already in the box stays: the prompt goes after it.
+function askChat(text) { closeSheet(); closePage(); const d = input.value.trim(); input.value = d ? d + '\n\n' + text : text; grow(); syncSend(); local.set('draft', input.value); input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
 
 /* memory */
 async function memoryTab() {
@@ -833,12 +876,17 @@ async function memoryTab() {
   let m; try { m = await api('GET', '/api/memory'); } catch (e) { return pbody(`<p class="err-text">${esc(e.message)}</p>`); }
   if (!pageOn('memory')) return;
   const TYPE = { user: 'About you', feedback: 'How to work', project: 'Project', reference: 'Reference' };
+  // Index lines whose memory file is gone still go into every prompt: list them so they can be forgotten.
+  const have = new Set(m.items.map(x => x.file)), orphans = [];
+  for (const l of String(m.index || '').split('\n')) { const f = l.match(/\(([\w.-]+\.md)\)/)?.[1]; if (f && f !== 'MEMORY.md' && !have.has(f)) orphans.push({ file: f, line: l.replace(/^\s*[-*]\s*/, '') }); }
   pbody(`<p class="lead">What dsh remembers between sessions, kept in <code>~/.dsh/memory</code>. The index goes into every session; dsh reads a memory when it's relevant. It saves preferences, corrections and lasting facts as you work, using the dsh-memory-evolve skill.</p>
-    ${m.items.length ? `<div class="rows">${m.items.map(x => `<button data-f="${esc(x.file)}"><span class="rx"><span class="r1">${esc(x.name)}</span><span class="r2">${esc(x.description || 'No description')}</span></span><span class="rv">${esc(TYPE[x.type] || x.type)}</span></button>`).join('')}</div>`
-      : '<div class="empty-note">Nothing saved yet. Tell dsh something to remember, or correct how it works, and it lands here.</div>'}
+    ${m.items.length || orphans.length ? `<div class="rows">${m.items.map(x => `<button data-f="${esc(x.file)}"><span class="rx"><span class="r1">${esc(x.name)}</span><span class="r2">${esc(x.description || 'No description')}</span></span><span class="rv">${esc(TYPE[x.type] || x.type)}</span></button>`).join('')}${orphans.map(x => `<div class="row"><span class="rx"><span class="r1">${esc(x.file.replace(/\.md$/, ''))}</span><span class="r2">${esc(x.line)}</span><span class="r3">In the index, file missing</span></span><button class="secondary" data-orphan="${esc(x.file)}">Forget</button></div>`).join('')}</div>`
+      : m.index ? '' : '<div class="empty-note">Nothing saved yet. Tell dsh something to remember, or correct how it works, and it lands here.</div>'}
+    ${m.index ? `<h4>Index in every prompt</h4><pre class="ipre">${esc(m.index)}</pre>` : ''}
     <div class="rowbtns"><button class="secondary" id="memTidy">Tidy memory</button><button class="primary" id="memLearn">Learn from session</button></div>
     <p class="hint">Tidy merges duplicates and drops stale memories. Learn runs dsh-evolve: it reviews the session for mistakes and corrections and proposes skills, rules or memories before writing anything.</p>`);
   pbody().querySelectorAll('[data-f]').forEach(b => b.onclick = () => memorySheet(b.dataset.f));
+  pbody().querySelectorAll('[data-orphan]').forEach(b => b.onclick = async () => { haptic(); try { await api('POST', '/api/memory/delete', { file: b.dataset.orphan }); toast('Forgotten'); } catch (e) { toast(e.message); } memoryTab(); });
   $('#memTidy').onclick = () => askChat('Use the dsh-memory-evolve skill to tidy my memory.');
   $('#memLearn').onclick = () => askChat('Use the dsh-evolve skill on this session.');
 }
@@ -861,7 +909,7 @@ async function instructionsTab() {
     ${files.map((f, i) => `<div class="panel ifile${f.exists ? '' : ' missing'}"><div class="ihead2"><div><h3>${esc(f.name)}</h3><p class="r2">${esc(label[f.key])}</p></div><span class="pill">${f.exists ? 'Loaded · ' + kb(f.size) : 'Not created'}</span></div>
       <p class="fpath code">${esc(short(f.path))}</p>
       ${f.exists ? `<div class="md ipreview" data-p="${i}"></div>` : ''}
-      <div class="rowbtns">${f.exists ? `<button class="secondary" data-more="${i}">Show all</button>` : ''}${f.editable ? `<button class="${f.exists ? 'secondary' : 'primary'}" data-edit="${i}">${f.exists ? I.pen + 'Edit' : I.plus + 'Create'}</button>` : '<span class="hint" style="margin:auto 0">Read only here: Claude Code owns it</span>'}</div></div>`).join('')}
+      <div class="rowbtns">${f.exists ? `<button class="secondary" data-more="${i}">Show all</button>` : ''}${f.editable ? `<button class="${f.exists ? 'secondary' : 'primary'}" data-edit="${i}">${f.exists ? I.pen + 'Edit' : I.plus + 'Create'}</button>` : `<span class="hint" style="margin:auto 0">${f.truncated ? 'Too large to edit here: use a text editor' : 'Read only here: Claude Code owns it'}</span>`}</div></div>`).join('')}
     <button class="secondary wide" id="sysBtn">${I.file}Full system prompt</button>`);
   const box = pbody();
   box.querySelectorAll('[data-p]').forEach(el => renderMd(el, files[+el.dataset.p].content));
@@ -879,6 +927,8 @@ function instructionEditor(f) {
     cancel: closeSheet,
     save: async el => {
       el.disabled = true;
+      // dsh (dsh-evolve) and other agents edit these files too: don't write over a change made since the editor opened.
+      try { const now = (await api('GET', '/api/instructions?' + cwdQ())).find(x => x.key === f.key); if (now && (now.content || '') !== (f.content || '') && !confirm(`${f.name} changed on disk since you opened it. Save anyway and replace those changes?`)) { el.disabled = false; return; } } catch {}
       try { await api('PUT', '/api/instructions', { cwd: pageCwd(), key: f.key, content: $('#insText').value }); closeSheet(); toast(`${f.name} saved; dsh reads it from the next step`); instructionsTab(); }
       catch (e) { $('#insErr').textContent = e.message; el.disabled = false; }
     },
@@ -898,12 +948,12 @@ $('#newBtn').innerHTML = I.plus + 'New session'; $('#newBtn').onclick = () => { 
 $('#newBtnWide').innerHTML = I.plus; $('#newBtnWide').onclick = () => { haptic(); newSession(); };
 $('#scrim').onclick = () => { drawer(false); agSide(false); closeSheet(); };
 $('#modeChip').onclick = () => { haptic(); modeSheet(); };
-$('#meter').onclick = usageSheet;
+$('#meter').onclick = usageSheet; $('#meter').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); usageSheet(); } };
 $('#balBtn').onclick = () => usagePage();
 $('#cwdChip').onclick = () => S.cur && pickDir(S.cur.cwd, d => patch({ cwd: d }));
 
 function sheet(html, actions = {}) {
-  const b = $('#sheetBody'); b.innerHTML = html; $('#sheet').hidden = false; document.body.classList.add('sheet');
+  const b = $('#sheetBody'); b.innerHTML = html; $('#sheet').hidden = false; $('#sheet').dataset.k = ''; document.body.classList.add('sheet');
   b.querySelectorAll('[data-a]').forEach(el => el.addEventListener('click', e => { haptic(); actions[el.dataset.a]?.(el, e); }));
   syncPreview();
   return b;
@@ -919,8 +969,9 @@ function modeSheet() {
   });
 }
 
-async function optionsSheet() {
-  const s = S.cur; const tgt = s || S.cfg; if (!tgt) return settingsSheet();
+// defaults: edit the config for new sessions even while a session is open (Settings > Defaults).
+async function optionsSheet(defaults = false) {
+  const s = defaults ? null : S.cur; const tgt = s || S.cfg; if (!tgt) return settingsSheet();
   const models = S.models || [{ id: tgt.model }];
   const b = sheet(`<h3>${s ? 'Session' : 'Defaults'}</h3>
     <h4>Model</h4>${seg('model', models.map(m => [m.id, modelName(m.id)]), tgt.model)}
@@ -938,20 +989,33 @@ async function optionsSheet() {
     cwd: () => pickDir(s.cwd, d => patch({ cwd: d })),
     compact: () => { closeSheet(); compact(); },
     export: () => { closeSheet(); const t = transcript(); N ? N.share(t) : copy(t); },
-    del: async () => { if (!confirm('Delete this session?')) return; closeSheet(); try { await api('DELETE', '/api/sessions/' + s.id); S.close?.(); S.cur = null; fromMessages([]); header(); meter(); setRunning(false); emptyState(); refreshSessions(); } catch (e) { toast(e.message); } },
+    del: async () => { if (!confirm('Delete this session?')) return; closeSheet(); try { await api('DELETE', '/api/sessions/' + s.id); noSession(); emptyState(); refreshSessions(); } catch (e) { toast(e.message); } },
   });
   async function set(p) {
     if (s) await patch(p); else { S.cfg = await api('PUT', '/api/config', p); }
-    optionsSheet();
+    optionsSheet(defaults);
   }
 }
+// Markdown of the session as it reads on screen: each tool with its outcome, a subagent's steps under its card.
 function transcript() {
-  return `# ${S.cur.title}\n\n` + S.items.map(it => it.kind === 'user' ? `**You:** ${it.text}` : it.kind === 'text' ? it.text : it.kind === 'tool' ? `> ${it.name}: \`${String(it.summary).slice(0, 200)}\`` : '').filter(Boolean).join('\n\n');
+  const ST = { denied: ' · denied', fail: ' · failed', waiting: ' · waiting for approval', run: ' · running' };
+  const code = t => { t = String(t ?? '').slice(0, 400); if (!/[\n`]/.test(t)) return t ? ` \`${t}\`` : ''; const f = '`'.repeat(Math.max(3, ...(t.match(/`+/g) || []).map(x => x.length + 1))); return `\n${f}\n${t}\n${f}`; };
+  const line = (it, pre) => it.name === 'agent' ? `${pre}- **${agentLabel(it)}** subagent${it.args?.description ? ': ' + it.args.description : ''}${ST[it.status] || ''}`
+    : `${pre}- ${tname(it.name)}${ST[it.status] || ''}:${code(it.summary).replace(/\n/g, '\n' + pre + '  ')}`;
+  const out = [];
+  for (const it of S.items) {
+    if (it.kind === 'user') out.push(`**You:** ${it.text}`);
+    else if (it.kind === 'text') out.push(it.text);
+    else if (it.kind === 'tool' && !it.parent) out.push([line(it, ''), ...S.items.filter(x => x.parent === it.id).map(x => line(x, '  '))].join('\n'));
+  }
+  return `# ${S.cur.title}\n\n` + out.join('\n\n');
 }
 
 async function newSession() {
   const recents = [...new Set(S.sessions.map(x => x.cwd))].filter(d => !isTempDir(d)).slice(0, 5);
-  const start = newStart();
+  let start = newStart();
+  // The open session's or the default folder may have been deleted since; then start at home.
+  if (start !== home()) try { await api('GET', '/api/fs?path=' + encodeURIComponent(start)); } catch { start = home(); }
   sheet(`<h3>New session</h3><div class="path">${esc(short(start))}</div><div class="rowbtns"><button class="secondary" data-a="pick">${I.folder}Choose folder</button><button class="primary" data-a="go">Start</button></div>${recents.length ? `<h4>Recent folders</h4><div class="rows">${recents.map((r, i) => `<button data-a="r" data-i="${i}">${I.folder}<span>${esc(short(r))}</span></button>`).join('')}</div>` : ''}`, {
     go: () => create(start), r: el => create(recents[+el.dataset.i]), pick: () => pickDir(start, create),
   });
@@ -963,16 +1027,19 @@ async function newSession() {
 
 async function pickDir(start, done) {
   let cur = start || home(), hidden = false;
-  const go = async p => {
-    let r; try { r = await api('GET', `/api/fs?path=${encodeURIComponent(p)}${hidden ? '&hidden=1' : ''}`); } catch (e) { return toast(e.message); }
+  // A folder that is gone or unreadable (a deleted session folder, /data/data above Termux's home): step up to
+  // the nearest one that opens, so the picker is always a way out.
+  const go = async (p, climb) => {
+    let r; try { r = await api('GET', `/api/fs?path=${encodeURIComponent(p)}${hidden ? '&hidden=1' : ''}`); }
+    catch (e) { const up = p.replace(/\/+[^/]*\/*$/, '') || '/'; if (climb && up !== p) return go(up, climb); if (climb && climb !== 'home' && p !== home()) return go(home(), 'home'); return toast(e.message); } // a tapped subfolder that won't open: say so, stay put
     cur = r.path;
     sheet(`<h3>Choose folder</h3><div class="path">${esc(short(r.path))}</div><div class="rowbtns"><button class="secondary" data-a="hid">${hidden ? 'Hide' : 'Show'} hidden</button><button class="primary" data-a="use">Use this folder</button></div><h4>Folders</h4><div class="rows">${settings().standalone && !r.path.startsWith('/storage/emulated/0') ? `<button data-a="phone">${I.folder}<span>Phone storage</span></button>` : ''}${r.path !== '/' ? `<button data-a="up">${I.up}<span>..</span></button>` : ''}${r.dirs.map((d, i) => `<button data-a="d" data-i="${i}">${I.folder}<span>${esc(d)}</span></button>`).join('') || '<div class="hint" style="padding:14px 16px;margin:0">No subfolders</div>'}</div>`, {
       phone: () => settings().allFiles ? go('/storage/emulated/0') : toast('Allow all files in Settings first'),
-      up: () => go(r.parent), d: el => go(r.path.replace(/\/$/, '') + '/' + r.dirs[+el.dataset.i]),
+      up: () => go(r.parent, true), d: el => go(r.path.replace(/\/$/, '') + '/' + r.dirs[+el.dataset.i]),
       hid: () => { hidden = !hidden; go(cur); }, use: () => { closeSheet(); done(cur); },
     });
   };
-  go(cur);
+  go(cur, true);
 }
 
 let pairDone = null;
@@ -999,27 +1066,28 @@ async function settingsSheet() {
     <div class="err-text" id="pairErr"></div>`}
     <h4>Appearance</h4>${seg('theme', [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']], local.get('theme') || 'system')}
     <h4>DeepSeek API key</h4>
-    <div class="kvs"><div class="kv"><span>Status</span><b>${key ? 'Set on backend' : 'Not set'}</b></div><div class="kv"><span>Balance</span><b id="bal">${esc(S.balance || '…')}</b></div></div>
+    <div class="kvs"><div class="kv"><span>Status</span><b>${key ? 'Set on backend' : 'Not set'}</b></div><div class="kv"><span>Balance</span><b id="bal">${balHtml()}</b></div></div>
     <label class="field" style="margin-top:14px"><span>Replace key</span><input id="fKey" type="password" placeholder="sk-…" autocapitalize="off" spellcheck="false"></label>
     <button class="secondary wide" data-a="key">Verify and save key</button><p class="hint">${bi ? 'Stored only inside this app.' : 'Stored only on the backend, in <code>~/.config/deepseek/key</code>.'}</p>
     <h4>Defaults for new sessions</h4>
     <div class="rows"><button data-a="defs">${I.gear}<span>${esc(S.cfg ? `${modelName(S.cfg.model)} · ${S.cfg.thinking === false ? 'no thinking' : S.cfg.effort + ' thinking'} · ${MODES[S.cfg.mode]?.[0] || S.cfg.mode}` : 'Unknown')}</span></button><button data-a="dcwd">${I.folder}<span>${esc(short(S.cfg?.cwd || ''))}</span></button></div>
     ${N ? `<h4>Notifications</h4><button class="secondary wide" data-a="notif">Allow notifications</button><p class="hint">Get notified when a run finishes or needs approval while DSHA is in the background.</p><h4>Screen off</h4><div class="kvs"><div class="kv"><span>Battery</span><b>${N.batteryExempt?.() ? 'Unrestricted' : 'Optimised'}</b></div></div>${N.batteryExempt?.() ? '' : '<button class="secondary wide" data-a="battery">Let runs continue when locked</button>'}<p class="hint">During a run DSHA keeps the phone awake until dsh is idle. Android battery optimisation can still pause it; set DSHA${c.backend === 'builtin' ? '' : ' and Termux'} to Unrestricted.</p>` : ''}
     <h4>About</h4><div class="kvs"><div class="kv"><span>DSHA</span><b>${esc(c.version)}</b></div><div class="kv"><span>dsh</span><b>${esc(S.health?.version || 'Not connected')}</b></div></div><div class="rows" style="margin-top:10px"><button data-a="agent">${I.book}<span>Plugins, skills and instructions</span></button><button data-a="lic">${I.file}<span>Third-party licences</span></button></div>`, {
-    backend: el => { if (el.dataset.v === c.backend) return; haptic(); N?.setBackend(el.dataset.v); closeSheet(); S.cur = null; boot(); },
+    backend: el => { if (el.dataset.v === c.backend) return; if (S.running && !confirm('Switching backend stops the current run. Switch anyway?')) return; haptic(); N?.setBackend(el.dataset.v); closeSheet(); noSession(); boot(); },
     restart: () => { haptic(); N?.restartBackend(); closeSheet(); toast('Restarting dsh'); setTimeout(boot, 2500); },
     files: () => N?.askAllFiles(),
     theme: el => { local.set('theme', el.dataset.v); applyTheme(); b.querySelectorAll('[data-a=theme]').forEach(x => x.classList.toggle('on', x === el)); },
     pair: el => { el.disabled = true; $('#pairErr').textContent = ''; pairTermux((ok, err) => { el.disabled = false; if (ok) { toast('Paired'); closeSheet(); boot(); } else $('#pairErr').textContent = err; }); },
     save: () => { saveSettings($('#fUrl').value.trim().replace(/\/+$/, ''), $('#fTok').value.trim()); closeSheet(); boot(); },
     key: async el => { const k = $('#fKey').value.trim(); if (!k) return; el.disabled = true; try { await api('PUT', '/api/key', { key: k }); toast('Key saved'); S.health = await api('GET', '/api/health'); settingsSheet(); } catch (e) { toast(e.message); el.disabled = false; } },
-    defs: () => { const s = S.cur; S.cur = null; optionsSheet().finally(() => { S.cur = s; }); },
+    defs: () => optionsSheet(true),
     dcwd: () => pickDir(S.cfg?.cwd, async d => { S.cfg = await api('PUT', '/api/config', { cwd: d }); toast('Default folder set'); }),
     battery: () => { N?.askBatteryExempt?.(); closeSheet(); },
     notif: () => N.askNotifications(),
     agent: () => agentPage(),
     lic: async () => { const t = await fetch('vendor/LICENSES.txt').then(r => r.text()); sheet(`<h3>Licences</h3><pre style="white-space:pre-wrap;font-size:11px;color:var(--muted)">${esc(t)}</pre>`); },
   });
+  $('#sheet').dataset.k = 'settings'; $('#sheet').dataset.af = String(!!c.allFiles);
   refreshBalance(true);
 }
 
@@ -1070,6 +1138,8 @@ function onboarding(err) {
   header(); conn(false);
 }
 
+// No session open: no stream, no run, an empty transcript.
+function noSession() { S.close?.(); S.close = null; S.cur = null; fromMessages([]); setRunning(false); header(); meter(); }
 async function boot() {
   try {
     S.health = await api('GET', '/api/health');
@@ -1082,11 +1152,11 @@ async function boot() {
   api('GET', '/api/models').then(r => { S.models = r.data; }).catch(() => {});
   await refreshSessions();
   // Standalone without a key: nothing works yet, so the key screen comes before any session.
-  if (builtin() && !S.health.hasKey) { S.cur = null; fromMessages([]); header(); meter(); emptyState(); return; }
+  if (builtin() && !S.health.hasKey) { noSession(); emptyState(); return; }
   const lastId = local.get('last');
   const pick = S.sessions.find(x => x.id === lastId) || S.sessions[0];
-  if (pick && Date.now() - pick.updated < 6 * 3600e3) await load(pick.id).catch(() => { S.cur = null; });
-  else { S.cur = null; fromMessages([]); header(); meter(); }
+  if (pick && Date.now() - pick.updated < 6 * 3600e3) await load(pick.id).catch(() => noSession());
+  else noSession();
   emptyState();
   if (!S.health.hasKey && !builtin()) { add({ kind: 'notice', err: true, text: 'No DeepSeek API key on the backend yet. Add one in Settings.' }); emptyState(); }
 }
@@ -1240,7 +1310,7 @@ function renderUI() {
   if (layout.mode === 'wide') inspector(); else if (layout.mode === 'tabletop') deckLive(); syncPreview(); }
 
 const waitingTool = () => S.items.find(x => x.kind === 'tool' && x.status === 'waiting');
-const focusTool = () => S.items.find(x => x.id === S.sel) || [...S.items].reverse().find(x => x.kind === 'tool');
+const focusTool = () => S.items.find(x => x.id === S.sel) || waitingTool() || [...S.items].reverse().find(x => x.kind === 'tool');
 const liveThink = () => { const l = [...S.items].reverse().find(x => x.kind !== 'notice'); return l?.kind === 'think' && l.live ? l : null; };
 const tail = (t, n = 6000) => (t = String(t || ''), t.length > n ? '…' + t.slice(-n) : t);
 
@@ -1391,8 +1461,9 @@ function statsHtml(s) {
   for (const t of tools) if (t.args?.path && /file|list_dir/.test(t.name)) files.set(t.args.path, t.name === 'read_file' || t.name === 'list_dir' ? (files.get(t.args.path) || 'read') : t.name === 'write_file' ? 'write' : 'edit');
   const ctx = u.lastPrompt || 0;
   return `<div class="panel"><h3>Context window</h3><div class="kpi" style="padding:0"><b style="margin:0">${k(ctx)}</b></div><div class="plan"><i style="width:${Math.min(100, 100 * ctx / 1048576)}%"></i></div><div class="planends"><span>${k(ctx)} used</span><span>1M</span></div></div>
-    <div class="kpis"><div class="kpi"><span>Balance</span><b class="balv">${esc(S.balance || '…')}</b><small>DeepSeek account</small></div>
-    <div class="kpi"><span>Spent</span><b>$${(u.costPeak || 0).toFixed(4)}</b><small>$${(u.costOff || 0).toFixed(4)} off-peak</small></div>
+    <div class="kpis"><div class="kpi"><span>Balance</span><b class="balv">${balHtml()}</b><small>DeepSeek account</small></div>
+    ${spentExact(u) ? `<div class="kpi"><span>Spent</span><b>$${u.cost.toFixed(4)}</b><small>$${(u.costPeak || 0).toFixed(4)} at full price</small></div>`
+      : `<div class="kpi"><span>Spent</span><b>$${(u.costOff || 0).toFixed(4)}–${(u.costPeak || 0).toFixed(4)}</b><small>${u.cost != null ? 'Partly before' : 'Before'} dsh 0.9.0: off-peak to full price</small></div>`}
     <div class="kpi"><span>Speed</span><b>${u.tps ? u.tps + ' tok/s' : 'None yet'}</b><small>${u.genMs ? `${Math.round(u.genOut / (u.genMs / 1000))} tok/s average` : 'Measured per model call'}</small></div>
     <div class="kpi"><span>Cache hits</span><b>${hitPct}%</b><small>${k(u.hit || 0)} of ${k(inTok)} in</small></div>
     <div class="kpi"><span>Tool calls</span><b>${tools.length}</b><small>${tools.filter(t => t.status === 'fail').length} failed · ${tools.filter(t => t.status === 'denied').length} denied</small></div>
@@ -1415,20 +1486,23 @@ const dayLabel = d => new Date(d + 'T12:00').toLocaleDateString(undefined, { mon
 // DeepSeek's peak windows (01-04, 06-10 UTC, weekdays), as local times, and the next switch from now.
 function peakClock(now = new Date()) {
   const peakAt = t => { const d = new Date(t), w = d.getUTCDay(), h = d.getUTCHours(); return w >= 1 && w <= 5 && (h >= 1 && h < 4 || h >= 6 && h < 10); };
-  const hm = (h, m = 0) => { const d = new Date(Date.UTC(2026, 0, 5, h, m)); return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
+  // On today's date, so the local offset (summer time or not) is the one in force now.
+  const hm = (h, m = 0) => { const d = new Date(+now); d.setUTCHours(h, m, 0, 0); return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
   const on = peakAt(+now); let t = Math.ceil(+now / 9e5) * 9e5; // look ahead in 15 min steps (some zones sit on :30)
   for (let i = 0; i < 7 * 96 && peakAt(t) === on; i++) t += 9e5;
   const at = new Date(t), sameDay = at.toDateString() === now.toDateString();
   const when = (sameDay ? '' : at.toLocaleDateString(undefined, { weekday: 'short' }) + ' ') + at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  return { on, next: when, windows: `${hm(1)}–${hm(4)} and ${hm(6)}–${hm(10)}` };
+  return { on, next: when, windows: [`${hm(1)}–${hm(4)}`, `${hm(6)}–${hm(10)}`] };
 }
 async function usagePage(tab = S.utab || 'overview') {
   S.utab = tab; S.ptab = 'usage'; drawer(false); closeSheet();
-  const page = $('#page'); page.hidden = false; document.body.classList.add('paged'); syncPreview();
+  const page = $('#page'); page.hidden = false; page.ariaLabel = 'Usage'; document.body.classList.add('paged'); syncPreview();
   $('#pageTitle').textContent = 'Usage'; $('#pageSub').textContent = S.usage ? 'Since ' + new Date(S.usage.since).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
   $('#ptabs').innerHTML = [['overview', 'Overview'], ['sessions', 'Sessions']].map(([k, l]) => `<button role="tab" data-t="${k}" class="${k === tab ? 'on' : ''}" aria-selected="${k === tab}">${l}</button>`).join('');
   $('#ptabs').querySelectorAll('button').forEach(b => b.onclick = () => { haptic(); usagePage(b.dataset.t); });
-  if (!S.usage) pbody('<div class="iempty">Loading…</div>');
+  // Draw what is cached now (never leave the previous page's body, and its buttons, under this title), refresh after.
+  $('#pbody').scrollTop = 0;
+  if (S.usage) (tab === 'sessions' ? usageSessions : usageOverview)(S.usage); else pbody('<div class="iempty">Loading…</div>');
   refreshBalance(true);
   try { S.usage = await api('GET', '/api/usage'); } catch (e) { if (!S.usage) return pbody(`<div class="iempty">${esc(e.message)}</div>`); }
   if (!pageOn('usage') || S.utab !== tab) return;
@@ -1443,15 +1517,15 @@ function usageOverview(u) {
       <div class="kpi"><span>Total spent</span><b>${money(spent(t))}</b><small>${ktok(t.hit + t.miss)} in · ${ktok(t.out)} out</small></div>
       <div class="kpi"><span>Last 30 days</span><b>${money(spent(p.month))}</b><small>7 days: ${money(spent(p.week))}</small></div>
       <div class="kpi"><span>Today</span><b>${money(spent(p.today))}</b><small>${p.today.calls} model call${p.today.calls === 1 ? '' : 's'}</small></div>
-      <div class="kpi"><span>Balance</span><b class="balv">${esc(S.balance || '…')}</b><small>DeepSeek account</small></div>
+      <div class="kpi"><span>Balance</span><b class="balv">${balHtml()}</b><small>DeepSeek account</small></div>
     </div>
     <div class="panel"><h3>Pricing now</h3>
       <div class="kv"><span>${c.on ? 'Peak now' : 'Off-peak now'}</span><b>${c.on ? 'Half price' : 'Full price'} at ${esc(c.next)}</b></div>
-      <div class="kv"><span>Peak hours</span><b>${esc(c.windows)}</b></div>
+      <div class="kv"><span>Peak hours</span><b>${c.windows.map(w => `<span class="nw">${esc(w)}</span>`).join(' and ')}</b></div>
       ${peakShare != null ? `<div class="kv"><span>Spend at peak rates</span><b>${peakShare}%</b></div>` : ''}
     </div>
     <div class="panel"><h3>Daily spend, last 30 days</h3>
-      <div class="ubars" role="list">${u.days.map((d, i) => `<button role="listitem" data-i="${i}" aria-label="${esc(dayLabel(d.day))}: ${money(spent(d))}"${i === u.days.length - 1 ? ' class="sel"' : ''}><i style="height:${spent(d) > 0 ? Math.max(3, spent(d) / max * 100) : 0}%"></i></button>`).join('')}</div>
+      <div class="ubars">${u.days.map((d, i) => `<button data-i="${i}" aria-label="${esc(dayLabel(d.day))}: ${money(spent(d))}${d.est > 0 ? ', estimated' : ''}"${i === u.days.length - 1 ? ' class="sel" aria-pressed="true"' : ' aria-pressed="false"'}><i style="height:${spent(d) > 0 ? Math.max(3, spent(d) / max * 100) : 0}%"></i></button>`).join('')}</div>
       <div class="uaxis"><span>${esc(dayLabel(u.days[0].day))}</span><span>Today</span></div>
       <div class="ucap" id="ucap"></div>
     </div>
@@ -1459,7 +1533,13 @@ function usageOverview(u) {
     ${t.est > 0 ? `<p class="hint">${money(t.est)} of this is estimated: sessions from before dsh 0.9.0 kept only their totals, so that part is priced at off-peak rates. From now on every call is logged at the rate of its hour.</p>` : ''}
   </div>`);
   const cap = i => { const d = u.days[i]; b.querySelector('#ucap').innerHTML = `<b>${esc(dayLabel(d.day))}</b> ${money(spent(d))}${d.est > 0 ? ' (estimated)' : ''} · ${d.calls} call${d.calls === 1 ? '' : 's'} · ${ktok(d.out)} out`; };
-  b.querySelectorAll('.ubars button').forEach(x => x.onclick = () => { haptic(); b.querySelectorAll('.ubars .sel').forEach(y => y.classList.remove('sel')); x.classList.add('sel'); cap(+x.dataset.i); });
+  // A bar is a few px wide on the cover screen: the whole strip is the target, a touch picks the nearest day and a drag scrubs.
+  const strip = b.querySelector('.ubars'), btns = [...strip.children];
+  const pick = i => { if (btns[i].classList.contains('sel')) return; haptic(); for (const y of btns) { y.classList.toggle('sel', y === btns[i]); y.ariaPressed = String(y === btns[i]); } cap(i); };
+  const at = e => { const r = strip.getBoundingClientRect(); pick(Math.max(0, Math.min(btns.length - 1, Math.floor((e.clientX - r.left) / r.width * btns.length)))); };
+  strip.onpointerdown = e => { at(e); strip.setPointerCapture?.(e.pointerId); };
+  strip.onpointermove = e => { if (e.buttons) at(e); };
+  btns.forEach((x, i) => x.onclick = () => pick(i)); // keyboard and TalkBack
   cap(u.days.length - 1);
 }
 function usageSessions(u) {
@@ -1467,8 +1547,9 @@ function usageSessions(u) {
   const list = [...u.sessions].sort(by === 'cost' ? (a, b) => spent(b) - spent(a) : (a, b) => b.updated - a.updated);
   const top = Math.max(...list.map(spent), 1e-9);
   const b = pbody(`<div class="ubody">${seg('sort', [['recent', 'Recent'], ['cost', 'Most spent']], by)}
-    <div class="ulist">${list.map((x, i) => `<div class="urow${S.uopen === x.id ? ' open' : ''}" data-i="${i}"><button class="uhead"><span class="rx"><span class="r1">${esc(x.title)}</span><span class="r2">${esc(new Date(x.updated).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))} · ${x.turns} turn${x.turns === 1 ? '' : 's'} · ${ktok(x.hit + x.miss + x.out)} tokens${x.running ? ' · running' : ''}</span><span class="ushare" aria-hidden="true"><i style="width:${spent(x) / top * 100}%"></i></span></span><b>${x.est > 0 && !x.cost ? '≈' : ''}${money(spent(x))}</b></button>
-      ${S.uopen === x.id ? `<div class="udetail"><div class="kv"><span>Input</span><b>${ktok(x.hit + x.miss)} · ${x.hit + x.miss ? Math.round(x.hit / (x.hit + x.miss) * 100) : 0}% cache hits</b></div><div class="kv"><span>Output</span><b>${ktok(x.out)}${x.reasoning ? ` · ${ktok(x.reasoning)} reasoning` : ''}</b></div><div class="kv"><span>Model calls</span><b>${x.calls || 'Not logged'}</b></div>${x.cost > 0 ? `<div class="kv"><span>At peak rates</span><b>${money(x.peak)}</b></div>` : ''}${x.est > 0 ? `<div class="kv"><span>Estimated</span><b>${money(x.est)}, before logging</b></div>` : ''}${x.cwd ? `<div class="kv"><span>Folder</span><b>${esc(short(x.cwd))}</b></div>` : ''}${x.deleted ? '' : '<button class="secondary wide" data-a="open">Open session</button>'}</div>` : ''}</div>`).join('') || '<div class="iempty">No sessions yet.</div>'}</div></div>`);
+    <div class="ulist">${list.map((x, i) => `<div class="urow${S.uopen === x.id ? ' open' : ''}" data-i="${i}"><button class="uhead" aria-expanded="${S.uopen === x.id}"><span class="rx"><span class="r1">${esc(x.title)}</span><span class="r2">${esc(new Date(x.updated).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))} · ${x.turns} turn${x.turns === 1 ? '' : 's'} · ${ktok(x.hit + x.miss + x.out)} tokens${x.running ? ' · running' : ''}</span><span class="ushare" aria-hidden="true"><i style="width:${spent(x) / top * 100}%"></i></span></span><b>${x.est > 0 && !x.cost ? '≈' : ''}${money(spent(x))}</b></button>
+      ${S.uopen === x.id ? `<div class="udetail"><div class="kv"><span>Input</span><b>${ktok(x.hit + x.miss)} · ${x.hit + x.miss ? Math.round(x.hit / (x.hit + x.miss) * 100) : 0}% cache hits</b></div><div class="kv"><span>Output</span><b>${ktok(x.out)}${x.reasoning ? ` · ${ktok(x.reasoning)} reasoning` : ''}</b></div><div class="kv"><span>Model calls</span><b>${x.calls || 'Not logged'}</b></div>${x.cost > 0 ? `<div class="kv"><span>At peak rates</span><b>${money(x.peak)}</b></div>` : ''}${x.est > 0 ? `<div class="kv"><span>Estimated</span><b>${money(x.est)}, before logging</b></div>` : ''}${x.cwd ? `<div class="kv"><span>Folder</span><b class="path">${esc(short(x.cwd))}</b></div>` : ''}${x.deleted ? '' : '<button class="secondary wide" data-a="open">Open session</button>'}</div>` : ''}</div>`).join('') || '<div class="iempty">No sessions yet.</div>'}</div></div>`);
+  b.querySelectorAll('[data-a="sort"]').forEach(x => x.ariaPressed = String(x.dataset.v === by));
   b.querySelectorAll('[data-a="sort"]').forEach(x => x.onclick = () => { haptic(); S.usort = x.dataset.v; usageSessions(u); });
   b.querySelectorAll('.urow').forEach(r => {
     const x = list[+r.dataset.i];
@@ -1484,8 +1565,10 @@ async function refreshBalance(force) {
   try { const r = await api('GET', '/api/balance'); S.balance = (r.balance_infos || []).map(x => `${x.total_balance} ${x.currency}`).join(', ') || 'Unknown'; }
   catch { S.balance = S.balance || 'Unavailable'; }
   $('#balBtn').innerHTML = `<span>Balance</span><b>${esc(S.balance)}</b>`;
-  document.querySelectorAll('.balv, #bal').forEach(e => { e.textContent = S.balance; });
+  document.querySelectorAll('.balv, #bal').forEach(e => { e.innerHTML = balHtml(); });
 }
+// Each amount with its currency on one line ("1234.56 USD" never splits).
+const balHtml = () => esc(S.balance || '…').split(', ').map(x => `<span class="nw">${x}</span>`).join(', ');
 
 function deckLive() {
   const box = $('#deckLive'), w = waitingTool(), th = liveThink(), t = [...S.items].reverse().find(x => x.kind === 'tool');

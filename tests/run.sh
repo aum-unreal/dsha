@@ -3,5 +3,5 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 node --test server/test/*.test.mjs
-D=$(mktemp -d); javac --release 17 -d "$D" src/dev/aum/dsha/Sse.java tests/SseCheck.java && java -cp "$D" dev.aum.dsha.SseCheck; rm -rf "$D"
+D=$(mktemp -d); javac --release 17 -d "$D" src/dev/aum/dsha/Sse.java src/dev/aum/dsha/Policy.java tests/SseCheck.java tests/PolicyCheck.java && java -cp "$D" dev.aum.dsha.SseCheck && java -cp "$D" dev.aum.dsha.PolicyCheck; rm -rf "$D"
 node tests/ui.cjs

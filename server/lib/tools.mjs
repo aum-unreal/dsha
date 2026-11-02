@@ -4,15 +4,21 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync, lstatSync, readlinkSync } from 'node:fs';
 import { loadSkill } from './skills.mjs';
-import { listSessions, loadSession } from './store.mjs';
+import { listSessions, loadSession, HOME as DSH_STATE } from './store.mjs';
 
-const MAX_OUT = 30000;
+const MAX_OUT = 30000, HEAD_MAX = MAX_OUT * 2, TAIL_MAX = MAX_OUT;
 const PREFIX = process.env.PREFIX || '/usr';
 // ripgrep when there is one (Termux, desktops). DSHA Standalone runs in Android's app sandbox,
 // which has none: grep and glob then walk the tree in Node (DSH_NO_RG forces that for tests).
-const RG = process.env.DSH_NO_RG ? null : [PREFIX + '/bin/rg', '/usr/bin/rg', ...(process.env.PATH || '').split(':').filter(Boolean).map(d => d + '/rg')].find(p => existsSync(p)) || null;
+// Only absolute PATH entries outside ~ count (a ~/bin/rg is too easy to plant), resolved once at startup.
+const HOME_DIR = process.env.HOME || '/';
+const RG = process.env.DSH_NO_RG ? null : (() => {
+  const dirs = [PREFIX + '/bin', '/usr/bin', '/bin', ...(process.env.PATH || '').split(':').filter(d => path.isAbsolute(d) && !inside(HOME_DIR, d))];
+  for (const d of dirs) { try { return realpathSync(d + '/rg'); } catch {} }
+  return null;
+})();
 const SKIP = new Set(['.git', 'node_modules', '.hg', '.svn', '.gradle', 'build', 'dist']);
 async function* walk(p, signal) {
   const st = await fs.stat(p).catch(() => null); if (!st) return;
@@ -43,11 +49,40 @@ async function nodeGlob(a, ctx) {
   return out.join('\n');
 }
 
+const FETCH_TIMEOUT = 60000, FETCH_MAX = 4 * 1024 * 1024;
 export function clip(s, max = MAX_OUT) {
   s = String(s ?? '');
   if (s.length <= max) return s;
   const head = s.slice(0, max * 0.7), tail = s.slice(-max * 0.25);
   return `${head}\n\n… [${s.length - head.length - tail.length} chars omitted] …\n\n${tail}`;
+}
+
+// True when p is c itself or below it.
+function inside(c, p) { const r = path.relative(c, p); return r === '' || (!r.startsWith('..') && !path.isAbsolute(r)); }
+// realpath of p, or of its nearest existing parent with the rest appended (for files not written yet).
+// A dangling symlink is followed to where a write through it would land, not taken as the link's own path.
+function real(p) {
+  const rest = [];
+  for (let hops = 0; ; ) {
+    try { return path.join(realpathSync(p), ...rest); } catch {}
+    let link = false; try { link = lstatSync(p).isSymbolicLink(); } catch {}
+    if (link) { if (++hops > 40) return null; p = path.resolve(path.dirname(p), readlinkSync(p)); continue; }
+    const d = path.dirname(p); if (d === p) return path.join(p, ...rest); rest.unshift(path.basename(p)); p = d;
+  }
+}
+// Whether 'edits' mode may run this file write without asking: only inside the session's working
+// directory (after symlinks), never in .git (hooks run code), dsh's own state, $PREFIX or ~'s dotfiles
+// and dot-folders (shell rc files, ~/.local/bin, ~/.dsh/mcp.json all run code later). Anything else asks.
+export function editInCwd(cwd, p) {
+  if (!cwd || typeof p !== 'string' || !p) return false;
+  const f = real(resolve({ cwd }, p)), root = real(path.resolve(cwd));
+  if (!f || !root || !inside(root, f) || f === root) return false;
+  if (path.relative(root, f).split(path.sep).includes('.git')) return false;
+  // $PREFIX holds the binaries tools run (rg, bash); only its tmp (Termux's $TMPDIR) is a place to work in.
+  if (process.env.PREFIX && inside(real(process.env.PREFIX), f) && !inside(real(process.env.PREFIX + '/tmp'), f)) return false;
+  for (const h of new Set([HOME_DIR, real(HOME_DIR)])) if (h !== '/' && inside(h, f) && path.relative(h, f).startsWith('.')) return false;
+  if (inside(real(DSH_STATE), f)) return false;
+  return true;
 }
 
 function resolve(ctx, p) {
@@ -61,18 +96,21 @@ function resolve(ctx, p) {
 const DEFAULT_SHELL = process.env.SHELL || [PREFIX + '/bin/bash', '/bin/bash', '/system/bin/sh'].find(p => existsSync(p)) || '/bin/sh';
 export function sh(command, { cwd, timeout = 120, signal, onData, shell = DEFAULT_SHELL } = {}) {
   return new Promise(res => {
-    let out = '', done = false, killed = '';
+    let out = '', tail = '', total = 0, done = false, killed = '';
     const p = spawn(shell, ['-c', command], { cwd, detached: true, env: { ...process.env, TERM: 'dumb', PAGER: 'cat', GIT_PAGER: 'cat' }, stdio: ['ignore', 'pipe', 'pipe'] });
     const kill = why => { if (done) return; killed = why; try { process.kill(-p.pid, 'SIGTERM'); setTimeout(() => { try { process.kill(-p.pid, 'SIGKILL'); } catch {} }, 1500); } catch {} };
     const t = setTimeout(() => kill(`timed out after ${timeout}s`), timeout * 1000);
     const ab = () => kill('stopped by user');
     signal?.addEventListener('abort', ab, { once: true });
-    const take = d => { const s = d.toString(); if (out.length < MAX_OUT * 4) out += s; onData?.(s); };
+    // The head up to HEAD_MAX, then a rolling tail: a long build's last lines (the error, the summary) survive.
+    const take = s => { total += s.length; if (out.length < HEAD_MAX) out += s; else tail = (tail + s).slice(-TAIL_MAX); onData?.(s); };
+    p.stdout.setEncoding('utf8'); p.stderr.setEncoding('utf8'); // a character split across chunks stays whole
     p.stdout.on('data', take); p.stderr.on('data', take);
     p.on('error', e => { out += String(e); });
     p.on('close', code => {
       done = true; clearTimeout(t); signal?.removeEventListener('abort', ab);
-      res({ code, out, killed });
+      const gap = total - out.length - tail.length;
+      res({ code, out: gap > 0 ? `${out}\n\n… [${gap} chars omitted] …\n\n${tail}` : out + tail, killed });
     });
   });
 }
@@ -121,7 +159,9 @@ export const TOOLS = {
     parameters: { type: 'object', properties: { path: { type: 'string' }, old_string: { type: 'string' }, new_string: { type: 'string' }, replace_all: { type: 'boolean' } }, required: ['path', 'old_string', 'new_string'] },
     async run(a, ctx) {
       const f = resolve(ctx, a.path);
-      const text = await fs.readFile(f, 'utf8');
+      const buf = await fs.readFile(f), text = buf.toString('utf8');
+      // Writing back text decoded with U+FFFD would destroy every byte that isn't UTF-8, not just the edited ones.
+      if (!Buffer.from(text, 'utf8').equals(buf)) throw new Error(`${f} is not valid UTF-8 text; edit it with bash (sed, iconv) instead`);
       const n = a.old_string ? text.split(a.old_string).length - 1 : 0;
       if (!n) throw new Error('old_string not found in ' + f);
       if (n > 1 && !a.replace_all) throw new Error(`old_string occurs ${n} times; add context or set replace_all`);
@@ -169,8 +209,13 @@ export const TOOLS = {
     description: 'Fetch a URL over HTTP(S) and return its text (HTML is reduced to readable text).',
     parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
     async run(a, ctx) {
-      const r = await fetch(a.url, { signal: ctx.signal, redirect: 'follow', headers: { 'user-agent': 'dsh/0.1' } });
-      let t = await r.text();
+      const signal = AbortSignal.any([ctx.signal || new AbortController().signal, AbortSignal.timeout(FETCH_TIMEOUT)]);
+      const r = await fetch(a.url, { signal, redirect: 'follow', headers: { 'user-agent': 'dsh/0.1' } });
+      // Read at most FETCH_MAX bytes; an endless or huge body is cut there instead of filling memory.
+      const parts = []; let size = 0, cut = false;
+      for await (const c of r.body || []) { parts.push(c); size += c.length; if (size >= FETCH_MAX) { cut = true; break; } }
+      let t = new TextDecoder().decode(Buffer.concat(parts).subarray(0, FETCH_MAX));
+      if (cut) { r.body.cancel().catch(() => {}); t += `\n[body cut at ${FETCH_MAX} bytes]`; }
       if (/html/.test(r.headers.get('content-type') || '')) t = htmlText(t);
       return clip(`HTTP ${r.status} ${r.url}\n\n${t}`, 40000);
     },
@@ -179,7 +224,12 @@ export const TOOLS = {
     risk: 'read',
     description: 'Replace the task list shown to the user. Use for multi-step work; keep exactly one item in_progress.',
     parameters: { type: 'object', properties: { todos: { type: 'array', items: { type: 'object', properties: { content: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] } }, required: ['content', 'status'] } } }, required: ['todos'] },
-    async run(a, ctx) { ctx.session.todos = a.todos; return 'Todo list updated.'; },
+    // A subagent's calls run with ctx.subagent === null (it can't spawn more): its list is its own and must
+    // not replace the main session's plan, which the user sees and which is saved.
+    async run(a, ctx) {
+      if (ctx.subagent === null) { ctx.todos = a.todos; return 'Todo list noted (private to this subagent; the user sees the main plan).'; }
+      ctx.session.todos = a.todos; return 'Todo list updated.';
+    },
   },
   session_log: {
     risk: 'read',
@@ -211,7 +261,8 @@ export const TOOLS = {
     },
   },
   preview: {
-    risk: 'read',
+    // Loading a page is a network request to any host (a URL can carry data out), so it asks like web_fetch.
+    risk: 'exec',
     description: "Show a web page in the app's preview pane, the browser beside the chat on the unfolded phone: a dev server you started (http://127.0.0.1:<port>) or any http(s) page. Start the server in the background first (nohup ... &) and check it answers. Use after building or changing a page so the user sees it.",
     parameters: { type: 'object', properties: { url: { type: 'string', description: 'http or https URL' } }, required: ['url'] },
     async run(a, ctx) {

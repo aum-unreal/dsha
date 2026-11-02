@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HOME, loadConfig, saveConfig } from './store.mjs';
-import { parseSkill } from './skills.mjs';
+import { parseSkill, isOff, toggleOff } from './skills.mjs';
 import { clip } from './tools.mjs';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -42,9 +42,10 @@ const sources = cwd => [
 function state(cfg = loadConfig()) { const s = cfg.agents || {}; return { off: new Set(s.off || []), claude: !!s.claude }; }
 
 // "a, b", "[a, b]" or a YAML list (joined by the front-matter parser as "- a - b"). Never the agent tool:
-// subagents don't start subagents.
+// subagents don't start subagents. Only an absent key or "*" means every tool: a key that is present but
+// gives no usable name falls back to read-only, never to all tools.
 function parseTools(v, source) {
-  if (!v || !String(v).trim() || /^\*$/.test(String(v).trim())) return null;
+  if (v == null || /^\*$/.test(String(v).trim())) return null;
   const names = String(v).replace(/[[\]'"]/g, ' ').split(/[\s,]+/).filter(x => x && x !== '-');
   const out = [...new Set(names.map(n => source === 'claude' ? CLAUDE_TOOLS[n] || (n.startsWith('mcp__') ? n : null) : n).filter(n => n && n !== 'agent'))];
   return out.length ? out : READ_ONLY;
@@ -69,7 +70,7 @@ export function listAgents(cwd, cfg) {
       const file = path.join(dir, n);
       let text; try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
       const a = parseAgent(text, file, source), id = `${source}:${n.slice(0, -3)}`;
-      const enabled = !st.off.has(id) && (source !== 'claude' || st.claude);
+      const enabled = !isOff(st.off, id, cwd) && (source !== 'claude' || st.claude);
       out.push({ id, ...a, prompt: undefined, source, file, enabled, shadowed: enabled && seen.has(a.name) });
       if (enabled) seen.add(a.name);
     }
@@ -112,10 +113,10 @@ export function readAgent(cwd, id) {
   return { ...a, ...parseAgent(fs.readFileSync(a.file, 'utf8'), a.file, a.source), editable: a.source === 'project' || a.source === 'dsh' };
 }
 
-export function setAgent(id, enabled) {
-  const st = state(), off = new Set(st.off);
-  enabled ? off.delete(id) : off.add(id);
-  saveConfig({ agents: { off: [...off], claude: st.claude } });
+// cwd: the project a `project:` id belongs to (without it, the bare id: every project's subagent of that name).
+export function setAgent(id, enabled, cwd) {
+  const st = state();
+  saveConfig({ agents: { off: [...toggleOff(new Set(st.off), id, cwd, enabled)], claude: st.claude } });
 }
 export function setClaudeAgents(on) { const st = state(); saveConfig({ agents: { off: [...st.off], claude: !!on } }); }
 
@@ -146,8 +147,13 @@ export function saveAgent(cwd, { id, name, description, tools, model, effort, pr
   if (EFFORTS.has(effort)) lines.push(`effort: ${effort}`);
   fs.mkdirSync(root, { recursive: true });
   fs.writeFileSync(file, `${lines.join('\n')}\n---\n\n${body}\n`);
-  if (old && old.file !== file) fs.rmSync(old.file, { force: true });
-  return `${scope === 'project' ? 'project' : 'dsh'}:${name}`;
+  const nid = `${scope === 'project' ? 'project' : 'dsh'}:${name}`;
+  if (old && old.file !== file) {
+    fs.rmSync(old.file, { force: true });
+    // A rename keeps the on/off state with the definition, and leaves nothing behind under the old id.
+    const st = state(); if (isOff(st.off, old.id, cwd)) { setAgent(old.id, true, cwd); setAgent(nid, false, cwd); }
+  }
+  return nid;
 }
 
 export function deleteAgent(cwd, id) {
@@ -157,4 +163,6 @@ export function deleteAgent(cwd, id) {
   if (a.source === 'builtin') throw new Error('Built-in subagents ship with dsh; turn them off instead');
   if (path.dirname(a.file) !== rootOf(cwd, a.source)) throw new Error('Refusing to delete outside the agents folder');
   fs.rmSync(a.file, { force: true });
+  // A later subagent made under the same name starts on.
+  const st = state(); if (isOff(st.off, id, cwd)) setAgent(id, true, cwd);
 }

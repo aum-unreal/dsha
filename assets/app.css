@@ -564,3 +564,7 @@ body.wide #agside { display: none; }
 .udetail { padding: 0 16px 14px; }
 .udetail .kv { border-bottom-color: var(--rule); }
 .udetail .secondary { margin-top: 12px; }
+.udetail .kv b.path { overflow-wrap: anywhere; word-break: normal; min-width: 0; }
+.ubars { touch-action: pan-y; }
+.nw { white-space: nowrap; }
+.md a.nolink { text-decoration: none; color: inherit; cursor: text; }

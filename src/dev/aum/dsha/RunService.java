@@ -14,14 +14,22 @@ import org.json.*;
 // holds a partial wake lock (the CPU stays on for dsh, in Termux or built in) and keeps DSHA's
 // process out of the cached-app freezer, so the event stream and the end-of-run notification
 // survive. The UI starts it when it sees a run; it asks dsh's /api/health every 20 s and stops
-// itself once nothing has been running for two checks in a row, so a missed run_end can't leave it on.
+// itself once nothing has been running for two checks in a row, so a missed run_end can't leave it on,
+// or once dsh has been unreachable for about 3 min (see Policy.Watch), so a dead backend can't either.
 public class RunService extends Service {
     private static final String TAG = "dsh:run";
     private static volatile String base = "", token = "";
     private PowerManager.WakeLock lock;
     private final Handler h = new Handler(Looper.getMainLooper());
-    private int idle;
+    private final Policy.Watch w = new Policy.Watch();
+    private volatile int lastStart; // the newest startId: a stop decided before it arrived must not take it down
     private Thread checker;
+
+    private static RunService current; // main thread only
+
+    // The backend at url is gone (Backend stopped or gave up), so the run this service watched is over.
+    // Main thread. stopSelfResult, not stopService, so a start already on its way keeps the service.
+    static void stopFor(String url) { RunService s = current; if (s != null && url.equals(base)) s.stopSelfResult(s.lastStart); }
 
     static void start(Context c, String url, String tok) {
         base = url; token = tok;
@@ -42,7 +50,7 @@ public class RunService extends Service {
             lock.setReferenceCounted(false);
         }
         lock.acquire(6 * 3600_000L); // a ceiling, not the expected length: the checks release it
-        idle = 0;
+        w.reset(); lastStart = id; current = this;
         if (checker == null) { checker = new Thread(this::watch, "dsh-run-watch"); checker.start(); }
         return START_NOT_STICKY;
     }
@@ -51,9 +59,12 @@ public class RunService extends Service {
         try {
             while (!Thread.interrupted()) {
                 Thread.sleep(20_000);
-                Boolean live = live();
-                if (live == null || live) idle = 0; // dsh unreachable: keep waiting rather than drop a run mid-step
-                else if (++idle >= 2) { h.post(this::stopSelf); return; }
+                // Unreachable for a check or two (a dsh restart, a slow phone) keeps waiting; for ~3 min, gives up.
+                if (!w.step(live())) continue;
+                int at = lastStart;
+                // stopSelfResult(at) is a no-op when a newer start (a new run's keepAwake) has reached the system,
+                // and that start's onStartCommand resets the watch, so the new run keeps its lock.
+                h.post(() -> { if (lastStart == at) stopSelfResult(at); });
             }
         } catch (InterruptedException ignored) {}
     }
@@ -73,6 +84,7 @@ public class RunService extends Service {
     }
 
     @Override public void onDestroy() {
+        if (current == this) current = null;
         if (checker != null) checker.interrupt();
         if (lock != null && lock.isHeld()) lock.release();
         super.onDestroy();

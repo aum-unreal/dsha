@@ -21,7 +21,9 @@ export const USER_HOME = process.env.HOME || '/';
 
 const DEFAULTS = { host: '127.0.0.1', port: 8787, model: 'deepseek-flash', effort: 'high', thinking: true, mode: 'ask', maxSteps: 80, base: 'https://api.deepseek.com', cwd: process.env.HOME || '/' };
 
+// A symlinked file (AGENTS.md -> CLAUDE.md, a linked config) is written through to its target, not replaced.
 export function writeAtomic(file, data, mode) {
+  try { if (fs.lstatSync(file).isSymbolicLink()) file = fs.realpathSync(file); } catch {}
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, data, mode ? { mode } : undefined);
@@ -53,20 +55,36 @@ export function writeKey(k) { writeAtomic(KEY_FILE, k.trim() + '\n', 0o600); }
 
 export const newId = () => Date.now().toString(36) + crypto.randomBytes(3).toString('hex');
 
+// The file name is the session's id. Summaries are cached by mtime and size, so listing (drawer, Usage page)
+// re-parses only changed transcripts instead of blocking the event loop on every byte of every session.
+const summaries = new Map();
+const summary = (id, s) => ({ id, title: s.title ?? '', cwd: s.cwd, model: s.model, updated: s.updated, created: s.created, turns: (s.messages || []).filter(m => m.role === 'user').length, usage: s.usage });
 export function listSessions() {
-  let names = []; try { names = fs.readdirSync(SESS).filter(n => n.endsWith('.json')); } catch {}
-  return names.map(n => { try { const s = JSON.parse(fs.readFileSync(path.join(SESS, n), 'utf8')); return { id: s.id, title: s.title, cwd: s.cwd, model: s.model, updated: s.updated, created: s.created, turns: s.messages.filter(m => m.role === 'user').length, usage: s.usage }; } catch { return null; } })
-    .filter(Boolean).sort((a, b) => b.updated - a.updated);
+  let names = []; try { names = fs.readdirSync(SESS).filter(n => /^[a-z0-9]+\.json$/.test(n)); } catch {}
+  const seen = new Set();
+  const out = names.map(n => {
+    const f = path.join(SESS, n); seen.add(f);
+    try {
+      const st = fs.statSync(f), c = summaries.get(f);
+      if (c && c.mtime === st.mtimeMs && c.size === st.size && c.ino === st.ino) return c.sum;
+      const sum = summary(n.slice(0, -5), JSON.parse(fs.readFileSync(f, 'utf8')));
+      summaries.set(f, { mtime: st.mtimeMs, size: st.size, ino: st.ino, sum }); return sum;
+    } catch { summaries.delete(f); return null; }
+  }).filter(Boolean).sort((a, b) => (b.updated || 0) - (a.updated || 0));
+  for (const f of summaries.keys()) if (!seen.has(f)) summaries.delete(f);
+  return out;
 }
 
+// A deleted session stays deleted: a run still unwinding (aborted by the delete) must not write it back.
+const gone = new Set();
 export function loadSession(id) {
-  if (!/^[a-z0-9]+$/.test(id)) return null;
-  try { return JSON.parse(fs.readFileSync(path.join(SESS, id + '.json'), 'utf8')); } catch { return null; }
+  if (!/^[a-z0-9]+$/.test(id) || gone.has(id)) return null;
+  try { const s = JSON.parse(fs.readFileSync(path.join(SESS, id + '.json'), 'utf8')); s.id = id; return s; } catch { return null; }
 }
 
-export function saveSession(s) { s.updated = Date.now(); writeAtomic(path.join(SESS, s.id + '.json'), JSON.stringify(s)); }
+export function saveSession(s) { if (gone.has(s.id)) return; s.updated = Date.now(); writeAtomic(path.join(SESS, s.id + '.json'), JSON.stringify(s)); }
 
-export function deleteSession(id) { if (/^[a-z0-9]+$/.test(id)) fs.rmSync(path.join(SESS, id + '.json'), { force: true }); }
+export function deleteSession(id) { if (/^[a-z0-9]+$/.test(id)) { gone.add(id); fs.rmSync(path.join(SESS, id + '.json'), { force: true }); } }
 
 export function createSession(cfg, { cwd, title, model, effort, mode, thinking } = {}) {
   const now = Date.now();

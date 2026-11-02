@@ -124,7 +124,16 @@ const stat = http.createServer((req, res) => {
     await page.locator('#slash').waitFor();
     await page.screenshot({ path: shot('slash') });
     await page.locator('#input').fill('');
-    await page.locator('#cwdChip').click(); await page.locator('#sheet .rows button', { hasText: 'src' }).click();
+    // A subfolder that won't open (Android/data, say): the picker says so and stays where it is, not jump home.
+    await page.route('**/api/fs?*', async rt => { const u = new URL(rt.request().url()); const p = u.searchParams.get('path');
+      if (p.endsWith('/locked')) return rt.fulfill({ status: 403, json: { error: 'EACCES: permission denied' } });
+      const res = await rt.fetch(), j = await res.json(); if (j.path?.endsWith('/project')) j.dirs = [...j.dirs, 'locked']; rt.fulfill({ response: res, json: j }); });
+    await page.locator('#cwdChip').click(); await page.locator('#sheet .rows button', { hasText: 'locked' }).click();
+    await page.locator('#toast.on').waitFor();
+    assert.match(await page.locator('#sheet .path').textContent(), /project$/, 'a failed tap stays on the folder');
+    await page.unroute('**/api/fs?*');
+    for (let i; (i = errors.findIndex(e => /status of 403/.test(e))) >= 0;) errors.splice(i, 1); // the 403 above was on purpose
+    await page.locator('#sheet .rows button', { hasText: 'src' }).click();
     await page.getByRole('button', { name: 'Use this folder' }).click(); await page.waitForTimeout(200);
     assert.match(await page.locator('#cwdChip').textContent(), /project\/src$/);
     await page.getByRole('button', { name: 'Sessions' }).click(); await page.getByRole('button', { name: 'Settings' }).click();
@@ -300,9 +309,22 @@ const stat = http.createServer((req, res) => {
     assert.ok(strip.fold && strip.over <= 1 && strip.gap >= 0, 'run strip fits: ' + JSON.stringify(strip));
     await page.screenshot({ path: shot('long-run') });
 
+    // A session begun before dsh 0.9.0: usage.cost only covers the calls since, so it is below the off-peak bound.
+    // Show the off-peak..full-price range rather than understate the spend.
+    const sesUrl = `**/api/sessions/${await page.evaluate(() => localStorage.getItem('dsha.last'))}`;
+    await page.route(sesUrl, async rt => { const res = await rt.fetch(), j = await res.json(); j.usage = { ...j.usage, cost: 0.001, costOff: 0.5, costPeak: 1 }; rt.fulfill({ response: res, json: j }); });
+    await page.reload(); await page.locator('.md', { hasText: 'Read it 45 times.' }).waitFor();
+    await page.waitForFunction(() => /\$0\.500–\$1\.000/.test(document.querySelector('#meter').textContent));
+    await page.locator('#meter').click();
+    assert.match(await page.locator('#sheet .kpi', { hasText: 'Spent' }).textContent(), /\$0\.5000–1\.0000Partly before dsh 0\.9\.0/);
+    await page.locator('#scrim').click({ position: { x: 200, y: 60 } });
+    await page.unroute(sesUrl); await page.reload(); await page.locator('.md', { hasText: 'Read it 45 times.' }).waitFor();
+
     // Usage sheet from the meter, with the account balance.
     await page.locator('#meter').click();
     await page.locator('#sheet .kpi', { hasText: 'Balance' }).filter({ hasText: '5.73 USD' }).waitFor();
+    // Spent is what the calls cost at their hour's rate (usage.cost), the full-price bound only beside it.
+    assert.match(await page.locator('#sheet .kpi', { hasText: 'Spent' }).textContent(), /Spent\$\d+\.\d{4}\$\d+\.\d{4} at full price/);
     await page.waitForTimeout(250); await page.screenshot({ path: shot('usage') });
 
     // The Usage page: total spend from dsh's ledger, a daily chart, then per-session spend.
@@ -323,6 +345,13 @@ const stat = http.createServer((req, res) => {
     await page.locator('.uhead').first().click();
     await page.locator('.udetail', { hasText: 'Model calls' }).waitFor();
     await page.waitForTimeout(200); await page.screenshot({ path: shot('usage-sessions') });
+    await page.locator('#pageBack').click(); await page.waitForTimeout(250);
+    // The Agent page right after the Usage page opens on its first tab, not the Usage tab it has no body for.
+    await page.getByRole('button', { name: 'Sessions' }).click(); await page.waitForTimeout(250);
+    await page.locator('#agentBtn').click();
+    await page.locator('#ptabs [data-t=agents].on').waitFor();
+    await page.locator('#pbody .rows .r1', { hasText: 'general-purpose' }).waitFor();
+    assert.equal(await page.locator('#pageTitle').textContent(), 'Agent');
     await page.locator('#pageBack').click(); await page.waitForTimeout(250);
 
     // An older session in a temp folder gets a warning and a one-tap move to home; new sessions never start there.
@@ -499,6 +528,30 @@ const stat = http.createServer((req, res) => {
     await page.getByRole('button', { name: 'Learn from session' }).click();
     assert.equal(await page.locator('#page').isVisible(), false);
     assert.equal(await page.locator('#input').inputValue(), 'Use the dsh-evolve skill on this session.');
+
+    // Edit and resend on a message sent in this view (no reload): dsh drops that turn and its reply.
+    const msgs = async () => { const id = await page.evaluate(() => localStorage.getItem('dsha.last')); const r = await fetch(`http://127.0.0.1:${DSH}/api/sessions/${id}`, { headers: { authorization: 'Bearer uitoken' } }); return (await r.json()).messages.filter(m => m.role === 'user').map(m => m.content); };
+    script = [[delta({ content: 'See [the readme](README.md) or [the site](https://example.com/).' })], [delta({ content: 'Second answer.' })]];
+    await page.locator('#input').fill('Fix this typo: teh');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await page.locator('.md', { hasText: 'See the readme' }).waitFor();
+    await page.getByRole('button', { name: 'Send' }).waitFor();
+    // A relative link would navigate the app's own WebView away: it stays text.
+    assert.equal(await page.locator('.md', { hasText: 'See the readme' }).locator('a[href]').count(), 1);
+    assert.equal(await page.locator('.md a', { hasText: 'the readme' }).getAttribute('href'), null);
+    const n0 = (await msgs()).length;
+    assert.equal((await msgs()).at(-1), 'Fix this typo: teh');
+    await page.locator('.msg.user', { hasText: 'Fix this typo: teh' }).click();
+    await page.getByRole('button', { name: 'Edit and resend from here' }).click();
+    await page.waitForFunction(() => document.querySelector('#input').value === 'Fix this typo: teh');
+    assert.equal(await page.locator('.msg.user', { hasText: 'Fix this typo: teh' }).count(), 0);
+    assert.equal((await msgs()).length, n0 - 1, 'the turn was dropped on the server');
+    await page.locator('#input').fill('Fix this typo: the');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await page.locator('.md', { hasText: 'Second answer.' }).waitFor();
+    const after = await msgs();
+    assert.equal(after.length, n0); assert.equal(after.at(-1), 'Fix this typo: the');
+    assert.equal(await page.locator('#empty').isVisible(), false);
 
     // DSHA Standalone (?standalone=1 in a browser): no Termux pairing; with no key yet the empty
     // state is the key screen, the key goes to dsh, and Settings offers Built in / Termux and a restart.

@@ -36,17 +36,25 @@ export function parseSkill(text) {
     const kv = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(lines[i]);
     if (!kv) continue;
     let v = kv[2].trim();
-    // YAML block scalars (`>-`, `|`) and plain values continued on indented lines.
-    const block = /^[>|][+-]?$/.test(v), more = [];
-    while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1])) more.push(lines[++i].trim());
+    // YAML block scalars (`>-`, `|`) and plain values continued on indented lines. A key with no value
+    // also takes a block list written at its own indent (`tools:\n- read_file\n- grep`), valid YAML.
+    const block = /^[>|][+-]?$/.test(v), more = [], cont = v ? /^\s+\S/ : /^(\s+\S|-(\s|$))/;
+    while (i + 1 < lines.length && cont.test(lines[i + 1])) more.push(lines[++i].trim());
     if (block) v = more.join(v[0] === '|' ? '\n' : ' ');
-    else if (more.length) v = [v, ...more].join(' ');
+    else if (more.length) v = [v, ...more].join(' ').trim();
     meta[kv[1]] = v.replace(/^(['"])([\s\S]*)\1$/, '$2').trim();
   }
   return { meta, body: m ? text.slice(m[0].length) : text };
 }
 
 function state(cfg = loadConfig()) { const s = cfg.skills || {}; return { off: new Set(s.off || []), claude: !!s.claude }; }
+// The off-list key. A project definition belongs to its folder, so its key names the folder: turning off
+// `project:x` in one project must not turn off an unrelated `project:x` in another.
+export const offKey = (id, cwd) => cwd && String(id).startsWith('project:') ? `project:${path.resolve(cwd)}:${String(id).slice(8)}` : String(id);
+// Off when its key is listed, or (lists written before keys named the folder) its bare project id.
+export const isOff = (off, id, cwd) => off.has(offKey(id, cwd)) || off.has(id);
+// Turning on clears both forms; turning off records only the folder's key.
+export function toggleOff(off, id, cwd, enabled) { if (enabled) { off.delete(offKey(id, cwd)); off.delete(id); } else off.add(offKey(id, cwd)); return off; }
 
 export function listSkills(cwd, cfg) {
   const st = state(cfg), seen = new Set(), out = [];
@@ -57,7 +65,7 @@ export function listSkills(cwd, cfg) {
       const file = path.join(dir, e.name, 'SKILL.md');
       let text; try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
       const { meta } = parseSkill(text), name = (meta.name || e.name).trim(), id = `${source}:${e.name}`;
-      const enabled = !st.off.has(id) && (source !== 'claude' || st.claude);
+      const enabled = !isOff(st.off, id, cwd) && (source !== 'claude' || st.claude);
       out.push({ id, name, description: meta.description || '', source, dir: path.join(dir, e.name), file, enabled, shadowed: enabled && seen.has(name) });
       if (enabled) seen.add(name);
     }
@@ -85,10 +93,10 @@ export function readSkill(cwd, id) {
   return { ...s, content: clip(fs.readFileSync(s.file, 'utf8'), 200000) };
 }
 
-export function setSkill(id, enabled) {
-  const st = state(), off = new Set(st.off);
-  enabled ? off.delete(id) : off.add(id);
-  saveConfig({ skills: { off: [...off], claude: st.claude } });
+// cwd: the project a `project:` id belongs to (without it, the bare id: every project's skill of that name).
+export function setSkill(id, enabled, cwd) {
+  const st = state();
+  saveConfig({ skills: { off: [...toggleOff(new Set(st.off), id, cwd, enabled)], claude: st.claude } });
 }
 export function setClaudeSkills(on) { const st = state(); saveConfig({ skills: { off: [...st.off], claude: !!on } }); }
 
@@ -112,23 +120,30 @@ export function deleteSkill(cwd, id) {
   const root = s.source === 'project' ? path.join(cwd, '.dsh', 'skills') : path.join(HOME, 'skills');
   if (path.dirname(s.dir) !== root) throw new Error('Refusing to delete outside the skills folder');
   fs.rmSync(s.dir, { recursive: true, force: true });
+  // A later skill made under the same name starts on.
+  const st = state(); if (isOff(st.off, id, cwd)) setSkill(id, true, cwd);
 }
 
 /* ---------- instruction files ---------- */
 export const GLOBAL_MD = path.join(HOME, 'DSH.md');
+// The app edits the whole file. One larger than this comes back cut (truncated: true) and can't be saved
+// from the app: saving the cut text would delete the middle of the real file.
+const EDIT_MAX = 1_000_000;
 const EDITABLE = new Set(['global', 'DSH.md', 'AGENTS.md']);
 
 export function instructionFiles(cwd) {
   const list = [['global', GLOBAL_MD], ['DSH.md', path.join(cwd, 'DSH.md')], ['AGENTS.md', path.join(cwd, 'AGENTS.md')], ['CLAUDE.md', path.join(cwd, 'CLAUDE.md')]];
   return list.map(([key, file]) => {
     let content = null; try { content = fs.readFileSync(file, 'utf8'); } catch {}
-    return { key, name: path.basename(file), scope: key === 'global' ? 'global' : 'project', path: file, exists: content != null, size: content?.length || 0, content: content == null ? '' : clip(content, 100000), editable: EDITABLE.has(key) };
+    const truncated = content != null && content.length > EDIT_MAX;
+    return { key, name: path.basename(file), scope: key === 'global' ? 'global' : 'project', path: file, exists: content != null, size: content?.length || 0, content: content == null ? '' : truncated ? clip(content, EDIT_MAX) : content, truncated, editable: EDITABLE.has(key) && !truncated };
   });
 }
 
 export function writeInstructions(cwd, key, content) {
   const f = instructionFiles(cwd).find(x => x.key === key);
   if (!f) throw new Error('Unknown instruction file');
+  if (f.truncated) throw new Error(`${f.name} is ${f.size} chars, too large to edit here without losing part of it; edit it with a text editor`);
   if (!f.editable) throw new Error(`${f.name} belongs to another agent; edit it there`);
   if (f.scope === 'project' && !fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error('Not a directory: ' + cwd);
   writeAtomic(f.path, String(content ?? ''));

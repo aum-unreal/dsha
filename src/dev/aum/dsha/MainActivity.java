@@ -38,6 +38,9 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
     private boolean builtin() { return standalone && !"termux".equals(prefs.getString("backend", "builtin")); }
     private final ExecutorService pool = Executors.newCachedThreadPool();
     private final Map<String, HttpURLConnection> streams = new ConcurrentHashMap<>();
+    // Stream ids JS still wants, added synchronously in stream() so a cancel() that lands before the
+    // worker has registered its connection is not lost (the worker checks this after registering).
+    private final Set<String> wanted = ConcurrentHashMap.newKeySet();
     private final Handler main = new Handler(Looper.getMainLooper());
     private String pendingShare;
     private boolean ready, visible;
@@ -121,11 +124,18 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         sensors = getSystemService(android.hardware.SensorManager.class);
         if (Build.VERSION.SDK_INT >= 30 && sensors != null) hinge = sensors.getDefaultSensor(android.hardware.Sensor.TYPE_HINGE_ANGLE);
         web.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> sendPosture(true));
-        handleIntent(getIntent());
+        // A share is taken once. recreate() (renderer gone) and a restore from recents hand back the same
+        // ACTION_SEND intent with a saved state, so take the undelivered share from the state instead.
+        if (state != null) pendingShare = state.getString("share");
+        else if ((getIntent().getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) handleIntent(getIntent());
         web.loadUrl(ORIGIN + "index.html");
     }
 
     @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); handleIntent(i); }
+    @Override protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        if (pendingShare != null && pendingShare.length() <= Policy.SHARE_MAX) out.putString("share", pendingShare); // a bigger one would overflow the state parcel
+    }
     @Override protected void onResume() {
         super.onResume(); visible = true; if (builtin() && !Backend.running()) Backend.start(this); if (preview != null) preview.onResume(); long away = pausedAt > 0 ? SystemClock.elapsedRealtime() - pausedAt : 0; js("window.native&&native.resume&&native.resume(" + away + ")");
         if (hinge != null) sensors.registerListener(this, hinge, android.hardware.SensorManager.SENSOR_DELAY_UI);
@@ -159,6 +169,7 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         String t = i.getStringExtra(Intent.EXTRA_TEXT), sub = i.getStringExtra(Intent.EXTRA_SUBJECT);
         if (t == null) return;
         pendingShare = sub != null && !t.contains(sub) ? sub + "\n\n" + t : t;
+        setIntent(new Intent(Intent.ACTION_MAIN)); // consumed: nothing that re-reads getIntent() adds it again
         if (ready) deliverShare();
     }
     private void deliverShare() { if (pendingShare == null) return; js("native.shared(" + JSONObject.quote(pendingShare) + ")"); pendingShare = null; }
@@ -322,24 +333,25 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         // Async HTTP. Result arrives as native.done(id, status, bodyText).
         @JavascriptInterface public void request(String id, String method, String path, String body) {
             pool.execute(() -> {
-                int status = 0; String text;
+                int status = 0; String text; HttpURLConnection c = null;
                 try {
-                    HttpURLConnection c = open(method, path);
-                    c.setReadTimeout(120000);
+                    c = open(method, path);
+                    c.setReadTimeout(Policy.readTimeout(method, path));
                     if (body != null && !body.isEmpty()) {
                         c.setDoOutput(true); c.setRequestProperty("Content-Type", "application/json");
                         try (OutputStream o = c.getOutputStream()) { o.write(body.getBytes(StandardCharsets.UTF_8)); }
                     }
                     status = c.getResponseCode();
                     text = readAll(status >= 400 ? c.getErrorStream() : c.getInputStream());
-                    c.disconnect();
-                } catch (Exception e) { text = "{\"error\":" + JSONObject.quote("Can't reach dsh at " + base() + " (" + e.getClass().getSimpleName() + ")") + "}"; }
+                } catch (Exception e) { status = 0; text = "{\"error\":" + JSONObject.quote("Can't reach dsh at " + base() + " (" + e.getClass().getSimpleName() + ")") + "}"; }
+                finally { if (c != null) c.disconnect(); }
                 js("native.done(" + JSONObject.quote(id) + "," + status + "," + JSONObject.quote(text) + ")");
             });
         }
 
         // Server-sent events. Each event JSON → native.ev(id, json); end → native.end(id, error).
         @JavascriptInterface public void stream(String id, String path) {
+            wanted.add(id);
             pool.execute(() -> {
                 String err = null;
                 try {
@@ -347,23 +359,36 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
                     c.setReadTimeout(60000); // server pings every 15s
                     c.setRequestProperty("Accept", "text/event-stream");
                     streams.put(id, c);
+                    // A cancel() before the put is seen by the first check. One while getResponseCode() is
+                    // connecting may hit a disconnect() that is a no-op (no socket yet), so check again once
+                    // connected; a cancel after that second check finds a live socket in streams and closes it.
+                    if (!wanted.contains(id)) throw new IOException("cancelled");
                     int st = c.getResponseCode();
+                    if (!wanted.contains(id)) throw new IOException("cancelled");
                     if (st != 200) throw new IOException("HTTP " + st + " " + readAll(c.getErrorStream()));
                     BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
                     // Coalesce token deltas into one JS call per ~30ms to keep the UI thread free.
                     String q = JSONObject.quote(id);
                     Sse.pump(r, batch -> js("native.ev(" + q + "," + batch + ")"), 30);
                 } catch (Exception e) { err = e.getClass().getSimpleName() + ": " + e.getMessage(); }
+                wanted.remove(id);
                 HttpURLConnection c = streams.remove(id);
                 if (c != null) c.disconnect();
                 js("native.end(" + JSONObject.quote(id) + "," + (err == null ? "null" : JSONObject.quote(err)) + ")");
             });
         }
-        @JavascriptInterface public void cancel(String id) { HttpURLConnection c = streams.remove(id); if (c != null) pool.execute(c::disconnect); }
+        @JavascriptInterface public void cancel(String id) { wanted.remove(id); HttpURLConnection c = streams.remove(id); if (c != null) pool.execute(c::disconnect); }
 
         @JavascriptInterface public void haptic() { main.post(() -> { if (web != null) web.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP); }); }
         @JavascriptInterface public void copy(String t) { getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("DSHA", t)); }
-        @JavascriptInterface public void share(String t) { main.post(() -> startActivity(Intent.createChooser(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, t), null))); }
+        // Capped (Policy.capShare): an Intent extra past ~1 MB fails the binder call and would crash on the main thread.
+        @JavascriptInterface public void share(String t) {
+            String c = Policy.capShare(t);
+            main.post(() -> {
+                try { startActivity(Intent.createChooser(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, c), null)); }
+                catch (Exception e) { android.util.Log.w("DSHA", "share", e); android.widget.Toast.makeText(MainActivity.this, "Could not share: " + e.getClass().getSimpleName(), android.widget.Toast.LENGTH_LONG).show(); }
+            });
+        }
         @JavascriptInterface public void notify(String title, String text) { main.post(() -> notifyUser(title, text)); }
         @JavascriptInterface public void askNotifications() {
             if (Build.VERSION.SDK_INT >= 33) main.post(() -> requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, REQ_NOTIF));

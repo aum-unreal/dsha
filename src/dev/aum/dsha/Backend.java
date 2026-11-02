@@ -104,7 +104,7 @@ public class Backend extends Service {
     }
 
     private static void kill() { java.lang.Process p = proc; proc = null; if (p != null) { p.destroy(); try { if (!p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) p.destroyForcibly(); } catch (InterruptedException ignored) {} } }
-    @Override public void onDestroy() { stopping = true; kill(); super.onDestroy(); }
+    @Override public void onDestroy() { stopping = true; kill(); RunService.stopFor(url()); super.onDestroy(); }
 
     static String read(File f) { try (InputStream in = new FileInputStream(f)) { ByteArrayOutputStream b = new ByteArrayOutputStream(); pipe(in, b); return b.toString("UTF-8"); } catch (IOException e) { return ""; } }
     static String tail(File f, int n) { String s = read(f); return s.length() > n ? s.substring(s.length() - n) : s; }
