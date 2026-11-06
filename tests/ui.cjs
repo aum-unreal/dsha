@@ -144,6 +144,12 @@ const stat = http.createServer((req, res) => {
     await page.locator('#sheet .seg button', { hasText: 'System' }).click();
     assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), undefined);
     await page.waitForTimeout(400); await page.screenshot({ path: shot('settings') });
+    // Step limit: Settings > Defaults writes dsh's maxSteps and shows the new choice.
+    await page.locator('#sheet [data-a="defs"]').click();
+    await page.locator('#sheet button[data-a="steps"].on', { hasText: '80' }).waitFor();
+    await page.locator('#sheet button[data-a="steps"]', { hasText: '1000' }).click();
+    await page.locator('#sheet button[data-a="steps"].on', { hasText: '1000' }).waitFor();
+    await page.waitForTimeout(250); await page.screenshot({ path: shot('step-limit') });
     await page.locator('#scrim').click({ position: { x: 200, y: 40 } }); await page.waitForTimeout(250);
 
     // Foldable: unfolded (book) → dual pane split at the hinge.

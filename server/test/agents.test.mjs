@@ -200,3 +200,39 @@ test('unknown saved names fail with the list; with every preset off the agent ca
   assert.equal(evs.find(e => e.type === 'tool_result' && e.id === 'h1').content, 'helped');
   for (const id of ['builtin:explore', 'builtin:general-purpose', 'builtin:plan']) await api('PATCH', '/api/agents', { cwd: work, id, enabled: true });
 });
+
+test('maxSteps ends a run, a raise reaches the run in progress, and a subagent keeps its own cap', async () => {
+  assert.equal((await api('PUT', '/api/config', { maxSteps: 'many' })).status, 400);
+  assert.equal((await api('PUT', '/api/config', { maxSteps: 0 })).status, 400);
+  await api('PUT', '/api/config', { maxSteps: 3 });
+  const s = (await api('POST', '/api/sessions', { cwd: work, mode: 'auto' })).json;
+  let n = 0;
+  route = () => [call('c' + ++n, 'bash', { command: 'true' }), usage(10)];
+  let evs = await run(s.id, 'loop forever');
+  assert.equal(n, 3); assert.equal(evs.at(-1).reason, 'max_steps');
+  assert.ok(evs.some(e => e.type === 'notice' && /Stopped after 3 steps/.test(e.text)));
+
+  // The first reply streams slowly, so the raise lands while the run is on its first of two allowed steps.
+  await api('PUT', '/api/config', { maxSteps: 2 });
+  n = 0;
+  route = () => {
+    const c = [call('c' + ++n, 'bash', { command: 'true' }), usage(10)];
+    return n === 1 ? { delay: 150, chunks: c } : n < 6 ? c : [delta({ content: 'done' }), usage(10)];
+  };
+  const pending = run(s.id, 'again', undefined, (await api('GET', '/api/sessions/' + s.id)).json.live.seq);
+  while (n < 1) await new Promise(r => setTimeout(r, 2));
+  await api('PUT', '/api/config', { maxSteps: 50 });
+  evs = await pending;
+  assert.equal(evs.at(-1).reason, 'done', 'the raised limit let the run finish'); assert.equal(n, 6);
+
+  await api('PUT', '/api/config', { maxSteps: 500 });
+  let subSteps = 0;
+  route = b => {
+    if (/subagent "/.test(sys(b))) return [call('s' + ++subSteps, 'read_file', { path: 'src/main.js' }), usage(10)];
+    return last(b).role === 'user' ? [call('a1', 'agent', { description: 'Spin', prompt: 'spin' }), usage(10)] : [delta({ content: 'over' }), usage(10)];
+  };
+  evs = await run(s.id, 'spawn one', undefined, (await api('GET', '/api/sessions/' + s.id)).json.live.seq);
+  assert.equal(subSteps, 80);
+  assert.match(evs.find(e => e.type === 'tool_result' && e.id === 'a1').content, /stopped after 80 steps/);
+  await api('PUT', '/api/config', { maxSteps: 80 });
+});

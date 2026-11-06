@@ -107,7 +107,8 @@ async function chat(dir, cont) {
   const dim = t => `\x1b[2m${t}\x1b[0m`, cyan = t => `\x1b[36m${t}\x1b[0m`, red = t => `\x1b[31m${t}\x1b[0m`;
   console.log(dim(`dsh ${VERSION} · ${s.model} · ${s.mode} · ${cwd} · session ${s.id}\n/stop /mode ask|edits|auto /model <name> /compact /quit`));
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '› ' });
-  // Joining a run in progress replays it from its start, so its output so far and any open approval show.
+  // Joining a run in progress replays it from its start (a very long run: from the current step), so its
+  // output so far and any open approval show.
   let after = 0, busy = false, mode = '', closed = false, boot = null;
   // Events up to replayTo are a replay of what already happened: of its approvals only the ones still open are asked.
   let replayTo = 0, open = new Set();

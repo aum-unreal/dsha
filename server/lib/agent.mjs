@@ -15,6 +15,8 @@ import { logUsage } from './usage.mjs';
 const runtimes = new Map();
 const MAX_EVENTS = +process.env.DSH_MAX_EVENTS || 20000;
 const COMPACT_AT = 700_000; // prompt tokens; models have a 1M window
+// A subagent's loop has no compaction, so it keeps this cap however high the user sets a run's maxSteps.
+const SUB_MAX_STEPS = 80;
 // Live tool output kept per call (events and SSE). The tool's result is clipped separately; past this the
 // stream would only grow dsh's memory for a card that shows the last 12k chars anyway.
 const LIVE_OUT = +process.env.DSH_LIVE_OUT || 64 * 1024;
@@ -99,11 +101,16 @@ export class Runtime {
   emit(type, data = {}) {
     const ev = { seq: ++this.seq, t: Date.now(), type, ...data };
     this.events.push(ev);
-    // Trim only finished runs, which a reconnecting client rebuilds from the snapshot. The live run
-    // stays whole however long it streams (every token is an event), or an app reopened mid-run
-    // would replay only its tail: the prompt, the first steps and the start of the reply gone.
+    // Trim what a reconnecting client rebuilds from the snapshot: finished runs and the live run's finished
+    // steps. The step in progress stays whole however long it streams (every token is an event), or an app
+    // reopened mid-run would draw a reply's tail with no start. Holding a whole live run instead grows
+    // without bound: a run of a thousand steps is hundreds of thousands of events in dsh's memory.
     const over = this.events.length - MAX_EVENTS;
-    if (over > 0) { let n = 0; while (n < over && !(this.running && this.events[n].seq >= this.runSeq)) n++; if (n) this.events.splice(0, n); }
+    if (over > 0) {
+      const keep = this.running ? Math.max(this.runSeq, this.stepSeq || 0) : Infinity;
+      let n = 0; while (n < over && this.events[n].seq < keep) n++;
+      if (n) this.events.splice(0, n);
+    }
     for (const f of this.subs) f(ev);
     return ev;
   }
@@ -114,8 +121,9 @@ export class Runtime {
   // Mid-run, a snapshot holds the messages before the run and the client replays the run's events.
   // at='step' (the app) holds every finished step instead and replays only the step in progress: a long
   // run is hundreds of thousands of token events, and replaying them all on each reopen is slow.
+  // Once a run's start has been trimmed every client gets the step form: nothing else can be replayed.
   snapshot(at) {
-    const s = this.s, step = at === 'step' && this.running && this.stepSeq > this.runSeq;
+    const s = this.s, step = this.running && this.stepSeq > this.runSeq && (at === 'step' || this.events[0]?.seq > this.runSeq);
     const base = !this.running ? s.messages.length : step ? this.stepBase : this.runBase;
     const fromSeq = !this.running ? this.seq : (step ? this.stepSeq : this.runSeq) - 1;
     return { ...s, messages: s.messages.slice(0, base), live: { running: this.running, seq: this.seq, fromSeq, waiting: [...this.waiting.keys()], queue: this.queue.map(q => ({ id: q.id, text: q.text })) } };
@@ -211,8 +219,8 @@ export class Runtime {
 
   async loop() {
     const s = this.s, ds = this.client(), signal = this.abort.signal, builtin = schemas();
-    const max = this.config().maxSteps;
-    for (let step = 0; step < max; step++) {
+    // Read every step, so raising the limit in the app reaches a run already in progress.
+    for (let step = 0; step < this.config().maxSteps; step++) {
       if (signal.aborted) return;
       // MCP tools are re-listed each step: a call can enable more of them.
       const tools = this.mcp ? [...builtin, ...await this.mcp.schemas(new Set(Object.keys(TOOLS)))] : builtin;
@@ -251,7 +259,7 @@ export class Runtime {
       this.save();
     }
     this.endReason = 'max_steps';
-    this.emit('notice', { text: `Stopped after ${max} steps. Send a message to continue.` });
+    this.emit('notice', { text: `Stopped after ${this.config().maxSteps} steps. Send a message to continue.` });
   }
 
   // One model call, retried while nothing has streamed yet (a reply cut off halfway has already been shown,
@@ -339,7 +347,7 @@ Date: ${new Date().toISOString().slice(0, 10)}
 Work on your own: you cannot ask the user or the main agent anything, and the user may deny a tool call; adjust if so. Your final message is returned to the main agent as your whole result.${files ? '\n\nInstructions from the user and the working directory:\n' + files : ''}` }, { role: 'user', content: String(a.prompt || '') }];
     const stats = { agent: def.name, spawned: def.source === 'spawned', model, steps: 0, tools: 0, in: 0, out: 0 };
     this.subStats.set(parent, stats);
-    const max = this.config().maxSteps;
+    const max = Math.min(this.config().maxSteps, SUB_MAX_STEPS);
     for (let step = 0; step < max; step++) {
       if (signal.aborted) throw cancelled();
       const tools = this.mcp && !def.tools ? [...builtin, ...await this.mcp.schemas(new Set(Object.keys(TOOLS)))] : this.mcp ? [...builtin, ...(await this.mcp.schemas(new Set(Object.keys(TOOLS)))).filter(t => allow(t.function.name))] : builtin;

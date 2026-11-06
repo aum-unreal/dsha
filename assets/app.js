@@ -323,7 +323,7 @@ function apply(ev) {
       closeLive(); setRunning(false); addFoot(); refreshSessions(); refreshBalance(true); reloadPreviewAfterRun();
       // A run that compacted mid-way was drawn from its events; redraw from the stored messages so turns match dsh's.
       if (S.cur && S.compacted) load(S.cur.id).catch(() => {});
-      if (!visible() && ev.reason !== 'stopped') { const t = [...S.items].reverse().find(x => x.kind === 'text'); N?.notify(S.cur?.title || 'dsh', t ? t.text.slice(0, 300) : 'Finished'); }
+      if (!visible() && ev.reason !== 'stopped') { const t = [...S.items].reverse().find(x => x.kind === 'text'); N?.notify(S.cur?.title || 'dsh', ev.reason === 'max_steps' ? 'Stopped at the step limit. Send a message to continue.' : t ? t.text.slice(0, 300) : 'Finished'); }
       break;
   }
 }
@@ -982,6 +982,8 @@ async function optionsSheet(defaults = false) {
     <h4>Model</h4>${seg('model', models.map(m => [m.id, modelName(m.id)]), tgt.model)}
     <h4>Thinking</h4>${seg('effort', [['off', 'Off'], ['low', 'Low'], ['high', 'High'], ['max', 'Max']], tgt.thinking === false ? 'off' : tgt.effort)}
     <p class="hint">Flash is fast and cheap; Pro is stronger on hard problems. Higher thinking spends more tokens before acting.</p>
+    <h4>Step limit</h4>${seg('steps', [80, 300, 1000, 3000].map(n => [n, n]), S.cfg?.maxSteps)}
+    <p class="hint">Steps a run can take before it stops and waits for you. A step is often 5 to 10 seconds, so 1000 is a couple of hours. Applies to every session, including a run in progress.</p>
     ${s ? `<h4>Session</h4><div class="rows">
       <button data-a="rename">${I.pen}<span>Rename</span></button>
       <button data-a="cwd">${I.folder}<span>${esc(short(s.cwd))}</span></button>
@@ -990,6 +992,7 @@ async function optionsSheet(defaults = false) {
       <button data-a="del" class="danger">${I.trash}<span>Delete session</span></button></div>` : ''}`, {
     model: el => set({ model: el.dataset.v }),
     effort: el => set(el.dataset.v === 'off' ? { thinking: false } : { thinking: true, effort: el.dataset.v }),
+    steps: async el => { S.cfg = await api('PUT', '/api/config', { maxSteps: +el.dataset.v }); optionsSheet(defaults); },
     rename: () => { const t = prompt('Session name', s.title); if (t) { closeSheet(); patch({ title: t }); } },
     cwd: () => pickDir(s.cwd, d => patch({ cwd: d })),
     compact: () => { closeSheet(); compact(); },
