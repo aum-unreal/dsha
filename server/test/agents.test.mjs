@@ -201,9 +201,9 @@ test('unknown saved names fail with the list; with every preset off the agent ca
   for (const id of ['builtin:explore', 'builtin:general-purpose', 'builtin:plan']) await api('PATCH', '/api/agents', { cwd: work, id, enabled: true });
 });
 
-test('maxSteps ends a run, a raise reaches the run in progress, and a subagent keeps its own cap', async () => {
+test('maxSteps ends a run, a raise reaches the run in progress, and no limit holds for runs and subagents', async () => {
   assert.equal((await api('PUT', '/api/config', { maxSteps: 'many' })).status, 400);
-  assert.equal((await api('PUT', '/api/config', { maxSteps: 0 })).status, 400);
+  assert.equal((await api('PUT', '/api/config', { maxSteps: -1 })).status, 400);
   await api('PUT', '/api/config', { maxSteps: 3 });
   const s = (await api('POST', '/api/sessions', { cwd: work, mode: 'auto' })).json;
   let n = 0;
@@ -225,14 +225,27 @@ test('maxSteps ends a run, a raise reaches the run in progress, and a subagent k
   evs = await pending;
   assert.equal(evs.at(-1).reason, 'done', 'the raised limit let the run finish'); assert.equal(n, 6);
 
-  await api('PUT', '/api/config', { maxSteps: 500 });
+  // No limit: well past the old cap, the run ends only when the model does.
+  await api('PUT', '/api/config', { maxSteps: 0 });
+  n = 0;
+  route = () => ++n <= 120 ? [call('c' + n, 'bash', { command: 'true' }), usage(10)] : [delta({ content: 'done' }), usage(10)];
+  evs = await run(s.id, 'long job', undefined, (await api('GET', '/api/sessions/' + s.id)).json.live.seq);
+  assert.equal(evs.at(-1).reason, 'done'); assert.equal(n, 121);
+
   let subSteps = 0;
+  let digested = null;
   route = b => {
-    if (/subagent "/.test(sys(b))) return [call('s' + ++subSteps, 'read_file', { path: 'src/main.js' }), usage(10)];
-    return last(b).role === 'user' ? [call('a1', 'agent', { description: 'Spin', prompt: 'spin' }), usage(10)] : [delta({ content: 'over' }), usage(10)];
+    if (/compress agent transcripts/.test(sys(b))) return [delta({ content: 'SUB SUMMARY' }), usage(50)];
+    if (/subagent "/.test(sys(b))) {
+      if (subSteps === 100) { digested = b.messages; return [delta({ content: 'sub finished' }), usage(10)]; }
+      return [call('s' + ++subSteps, 'read_file', { path: 'src/main.js' }), usage(subSteps === 99 ? 800000 : 10)];
+    }
+    return last(b).role === 'user' ? [call('a1', 'agent', { description: 'Spin', prompt: 'spin task' }), usage(10)] : [delta({ content: 'over' }), usage(10)];
   };
   evs = await run(s.id, 'spawn one', undefined, (await api('GET', '/api/sessions/' + s.id)).json.live.seq);
-  assert.equal(subSteps, 80);
-  assert.match(evs.find(e => e.type === 'tool_result' && e.id === 'a1').content, /stopped after 80 steps/);
-  await api('PUT', '/api/config', { maxSteps: 80 });
+  assert.equal(subSteps, 100, 'a subagent runs past the old cap of 80');
+  assert.equal(evs.find(e => e.type === 'tool_result' && e.id === 'a1').content, 'sub finished');
+  // Near the context limit it compacts as the main agent does: system prompt, task and summary, then the new step.
+  assert.ok(digested.length <= 4, 'compacted: ' + digested.length);
+  assert.match(digested[1].content, /spin task[\s\S]*SUB SUMMARY/);
 });

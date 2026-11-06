@@ -15,8 +15,6 @@ import { logUsage } from './usage.mjs';
 const runtimes = new Map();
 const MAX_EVENTS = +process.env.DSH_MAX_EVENTS || 20000;
 const COMPACT_AT = 700_000; // prompt tokens; models have a 1M window
-// A subagent's loop has no compaction, so it keeps this cap however high the user sets a run's maxSteps.
-const SUB_MAX_STEPS = 80;
 // Live tool output kept per call (events and SSE). The tool's result is clipped separately; past this the
 // stream would only grow dsh's memory for a card that shows the last 12k chars anyway.
 const LIVE_OUT = +process.env.DSH_LIVE_OUT || 64 * 1024;
@@ -219,8 +217,8 @@ export class Runtime {
 
   async loop() {
     const s = this.s, ds = this.client(), signal = this.abort.signal, builtin = schemas();
-    // Read every step, so raising the limit in the app reaches a run already in progress.
-    for (let step = 0; step < this.config().maxSteps; step++) {
+    // Read every step, so changing the limit in the app reaches a run already in progress. 0 is no limit.
+    for (let step = 0; !this.config().maxSteps || step < this.config().maxSteps; step++) {
       if (signal.aborted) return;
       // MCP tools are re-listed each step: a call can enable more of them.
       const tools = this.mcp ? [...builtin, ...await this.mcp.schemas(new Set(Object.keys(TOOLS)))] : builtin;
@@ -347,9 +345,14 @@ Date: ${new Date().toISOString().slice(0, 10)}
 Work on your own: you cannot ask the user or the main agent anything, and the user may deny a tool call; adjust if so. Your final message is returned to the main agent as your whole result.${files ? '\n\nInstructions from the user and the working directory:\n' + files : ''}` }, { role: 'user', content: String(a.prompt || '') }];
     const stats = { agent: def.name, spawned: def.source === 'spawned', model, steps: 0, tools: 0, in: 0, out: 0 };
     this.subStats.set(parent, stats);
-    const max = Math.min(this.config().maxSteps, SUB_MAX_STEPS);
-    for (let step = 0; step < max; step++) {
+    let prompt = 0;
+    for (let step = 0; !this.config().maxSteps || step < this.config().maxSteps; step++) {
       if (signal.aborted) throw cancelled();
+      if (prompt > COMPACT_AT) {
+        const summary = await this.digest(ds, signal, messages.slice(1), { model, sub: true });
+        if (signal.aborted) throw cancelled();
+        if (summary) { messages.splice(1, Infinity, { role: 'user', content: `Your task: ${a.prompt}\n\nYour earlier steps were compacted to this summary. Carry on from it:\n\n${summary}` }); prompt = 0; }
+      }
       const tools = this.mcp && !def.tools ? [...builtin, ...await this.mcp.schemas(new Set(Object.keys(TOOLS)))] : this.mcp ? [...builtin, ...(await this.mcp.schemas(new Set(Object.keys(TOOLS)))).filter(t => allow(t.function.name))] : builtin;
       this.emit('sub_step', { parent, step });
       let f0 = 0;
@@ -359,7 +362,7 @@ Work on your own: you cannot ask the user or the main agent anything, and the us
       this.account(usage, f0 ? Date.now() - f0 : 0, { model, sub: true });
       if (finish === 'insufficient_system_resource') throw cutShort();
       messages.push(message);
-      stats.steps++; stats.in += usage.hit + usage.miss; stats.out += usage.out;
+      stats.steps++; stats.in += usage.hit + usage.miss; stats.out += usage.out; if (usage.hit || usage.miss) prompt = usage.hit + usage.miss;
       if (!message.tool_calls?.length) return message.content || '(The subagent finished without a reply.)';
       for (const c of message.tool_calls) {
         stats.tools++;
@@ -367,7 +370,7 @@ Work on your own: you cannot ask the user or the main agent anything, and the us
         messages.push({ role: 'tool', tool_call_id: c.id, content });
       }
     }
-    return `The subagent stopped after ${max} steps without a final report. Its last reply: ${messages.findLast(m => m.role === 'assistant' && m.content)?.content || '(none)'}`;
+    return `The subagent stopped after ${this.config().maxSteps} steps without a final report. Its last reply: ${messages.findLast(m => m.role === 'assistant' && m.content)?.content || '(none)'}`;
   }
 
   // 'edits' runs a built-in file write without asking only inside the working directory (editInCwd: not .git,
@@ -408,26 +411,30 @@ Work on your own: you cannot ask the user or the main agent anything, and the us
     const s = this.s;
     if (s.messages.length < 4) return false;
     this.emit('notice', { text: 'Compacting conversation…' });
-    const transcript = s.messages.map(m => m.role === 'tool' ? `[tool result]\n${clip(m.content, 3000)}` : m.role === 'assistant' ? `[assistant]\n${m.content || ''}${m.tool_calls ? '\n' + m.tool_calls.map(c => `→ ${c.function.name} ${clip(c.function.arguments, 600)}`).join('\n') : ''}` : `[${m.role}]\n${m.content}`).join('\n\n');
-    const model = s.model;
-    // Retried like a step: one transient 429/5xx shouldn't end the long run that reached this point.
-    const r = await this.call(signal, () => false, () => ds.stream({ model, thinking: false, messages: [
-      { role: 'system', content: 'You compress agent transcripts. Write a dense handoff summary: the user\'s goals and preferences, decisions made, files touched (paths), commands that matter, current state, and open next steps. Markdown, no preamble.' },
-      { role: 'user', content: clip(transcript, 600000) }] }, {}, signal));
-    if (!r || signal.aborted) return false;
-    const { message, usage } = r;
-    this.account(usage, 0, { model });
+    const model = s.model, summary = await this.digest(ds, signal, s.messages, { model });
+    if (summary == null || signal.aborted) return false;
     const last = [...s.messages].reverse().find(m => m.role === 'user');
-    s.messages = [{ role: 'user', content: `Summary of our conversation so far (earlier turns were compacted):\n\n${message.content}` }, { role: 'assistant', content: 'Understood. I have the context from the summary.' }];
+    s.messages = [{ role: 'user', content: `Summary of our conversation so far (earlier turns were compacted):\n\n${summary}` }, { role: 'assistant', content: 'Understood. I have the context from the summary.' }];
     if (this.running && last) s.messages.push({ role: 'user', content: `Continue with my latest request: ${last.content}` });
     for (const k of Object.keys(s.meta)) if (IDX_META.test(k)) delete s.meta[k];
     // Mid-run, the compacted messages are the run's new base and the replay starts after this event, so a
     // client reloading on 'compacted' gets a snapshot that doesn't replay it again.
     this.runBase = s.messages.length; s.usage.lastPrompt = 0; s.compactions = (s.compactions || 0) + 1;
     this.save();
-    const ev = this.emit('compacted', { summary: message.content });
+    const ev = this.emit('compacted', { summary });
     if (this.running) this.runSeq = ev.seq + 1;
     this.stepBase = this.runBase; this.stepSeq = 0;
     return true;
+  }
+  // A model-written summary of messages, or null if the user stopped it. Used by compact() and by subagents.
+  async digest(ds, signal, messages, { model, sub = false }) {
+    const transcript = messages.map(m => m.role === 'tool' ? `[tool result]\n${clip(m.content, 3000)}` : m.role === 'assistant' ? `[assistant]\n${m.content || ''}${m.tool_calls ? '\n' + m.tool_calls.map(c => `→ ${c.function.name} ${clip(c.function.arguments, 600)}`).join('\n') : ''}` : `[${m.role}]\n${m.content}`).join('\n\n');
+    // Retried like a step: one transient 429/5xx shouldn't end the long run that reached this point.
+    const r = await this.call(signal, () => false, () => ds.stream({ model, thinking: false, messages: [
+      { role: 'system', content: 'You compress agent transcripts. Write a dense handoff summary: the user\'s goals and preferences, decisions made, files touched (paths), commands that matter, current state, and open next steps. Markdown, no preamble.' },
+      { role: 'user', content: clip(transcript, 600000) }] }, {}, signal));
+    if (!r || signal.aborted) return null;
+    this.account(r.usage, 0, { model, sub });
+    return r.message.content;
   }
 }

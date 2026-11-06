@@ -323,7 +323,7 @@ function apply(ev) {
       closeLive(); setRunning(false); addFoot(); refreshSessions(); refreshBalance(true); reloadPreviewAfterRun();
       // A run that compacted mid-way was drawn from its events; redraw from the stored messages so turns match dsh's.
       if (S.cur && S.compacted) load(S.cur.id).catch(() => {});
-      if (!visible() && ev.reason !== 'stopped') { const t = [...S.items].reverse().find(x => x.kind === 'text'); N?.notify(S.cur?.title || 'dsh', ev.reason === 'max_steps' ? 'Stopped at the step limit. Send a message to continue.' : t ? t.text.slice(0, 300) : 'Finished'); }
+      if (!visible() && ev.reason !== 'stopped') { const t = [...S.items].reverse().find(x => x.kind === 'text'); N?.notify(S.cur?.title || 'dsh', ev.reason === 'max_steps' ? 'Stopped at the step limit. Send a message to continue.' : ev.reason === 'error' ? 'Stopped: ' + (API_ERR[S.items.findLast(x => x.kind === 'apierr')?.kind2] || API_ERR.bad) : t ? t.text.slice(0, 300) : 'Finished'); }
       break;
   }
 }
@@ -982,8 +982,8 @@ async function optionsSheet(defaults = false) {
     <h4>Model</h4>${seg('model', models.map(m => [m.id, modelName(m.id)]), tgt.model)}
     <h4>Thinking</h4>${seg('effort', [['off', 'Off'], ['low', 'Low'], ['high', 'High'], ['max', 'Max']], tgt.thinking === false ? 'off' : tgt.effort)}
     <p class="hint">Flash is fast and cheap; Pro is stronger on hard problems. Higher thinking spends more tokens before acting.</p>
-    <h4>Step limit</h4>${seg('steps', [80, 300, 1000, 3000].map(n => [n, n]), S.cfg?.maxSteps)}
-    <p class="hint">Steps a run can take before it stops and waits for you. A step is often 5 to 10 seconds, so 1000 is a couple of hours. Applies to every session, including a run in progress.</p>
+    <h4>Step limit</h4>${seg('steps', [[0, 'No limit'], [300, 300], [1000, 1000], [3000, 3000]], S.cfg?.maxSteps)}
+    <p class="hint">With no limit a run goes on until it finishes, you stop it or your DeepSeek balance runs out. A step is often 5 to 10 seconds. Applies to every session, including a run in progress.</p>
     ${s ? `<h4>Session</h4><div class="rows">
       <button data-a="rename">${I.pen}<span>Rename</span></button>
       <button data-a="cwd">${I.folder}<span>${esc(short(s.cwd))}</span></button>

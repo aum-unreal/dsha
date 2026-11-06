@@ -146,7 +146,7 @@ const stat = http.createServer((req, res) => {
     await page.waitForTimeout(400); await page.screenshot({ path: shot('settings') });
     // Step limit: Settings > Defaults writes dsh's maxSteps and shows the new choice.
     await page.locator('#sheet [data-a="defs"]').click();
-    await page.locator('#sheet button[data-a="steps"].on', { hasText: '80' }).waitFor();
+    await page.locator('#sheet button[data-a="steps"].on', { hasText: 'No limit' }).waitFor();
     await page.locator('#sheet button[data-a="steps"]', { hasText: '1000' }).click();
     await page.locator('#sheet button[data-a="steps"].on', { hasText: '1000' }).waitFor();
     await page.waitForTimeout(250); await page.screenshot({ path: shot('step-limit') });

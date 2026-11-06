@@ -321,3 +321,13 @@ test('steering: cancel a queued message; a stop hands queued text back', async (
   assert.deepEqual(ev.filter(e => e.type === 'unqueued').map(e => [e.id, e.returned, e.text]), [[a, undefined, undefined], [b, true, 'keep me']]);
   assert.ok(!(await api('GET', '/api/sessions/' + s.id)).json.messages.some(m => m.content === 'keep me'));
 });
+
+test('running out of credit ends a run at once, with the reason', async () => {
+  const s = (await api('POST', '/api/sessions', { cwd: work })).json;
+  const before = requests.length;
+  script = [(res) => { res.writeHead(402, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'Insufficient Balance' } })); }];
+  const evs = await run(s.id, 'build it', undefined, (await api('GET', '/api/sessions/' + s.id)).json.live.seq);
+  assert.equal(requests.length, before + 1, 'not retried');
+  assert.equal(evs.find(e => e.type === 'error').kind, 'balance');
+  assert.equal(evs.at(-1).reason, 'error');
+});

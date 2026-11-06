@@ -19,7 +19,8 @@ export function isTemp(p) {
 }
 export const USER_HOME = process.env.HOME || '/';
 
-const DEFAULTS = { host: '127.0.0.1', port: 8787, model: 'deepseek-flash', effort: 'high', thinking: true, mode: 'ask', maxSteps: 80, base: 'https://api.deepseek.com', cwd: process.env.HOME || '/' };
+// maxSteps 0: no limit, a run goes on until it finishes, is stopped or the DeepSeek balance runs out.
+const DEFAULTS = { host: '127.0.0.1', port: 8787, model: 'deepseek-flash', effort: 'high', thinking: true, mode: 'ask', maxSteps: 0, base: 'https://api.deepseek.com', cwd: process.env.HOME || '/' };
 
 // A symlinked file (AGENTS.md -> CLAUDE.md, a linked config) is written through to its target, not replaced.
 export function writeAtomic(file, data, mode) {

@@ -15,7 +15,7 @@ import { systemPrompt } from './agent.mjs';
 import { listAgents, readAgent, saveAgent, setAgent, setClaudeAgents, deleteAgent } from './agents.mjs';
 import { TOOLS, editInCwd } from './tools.mjs';
 
-export const VERSION = '0.11.0';
+export const VERSION = '0.11.1';
 const BOOT = crypto.randomBytes(6).toString('hex'); // tells a client the server restarted (event seqs start again)
 
 export function createServer({ config = loadConfig } = {}) {
@@ -41,7 +41,7 @@ export function createServer({ config = loadConfig } = {}) {
     ['GET', /^\/api\/config$/, () => pub(cfg)],
     ['PUT', /^\/api\/config$/, (_, b) => {
       const p = pick(b, ['model', 'effort', 'mode', 'thinking', 'maxSteps', 'cwd', 'base']);
-      if ('maxSteps' in p && !(Number.isInteger(p.maxSteps) && p.maxSteps > 0)) throw httpErr(400, 'maxSteps must be a whole number above 0');
+      if ('maxSteps' in p && !(Number.isInteger(p.maxSteps) && p.maxSteps >= 0)) throw httpErr(400, 'maxSteps must be a whole number, 0 for no limit');
       if (p.cwd) { p.cwd = path.resolve(expand(p.cwd)); if (!isDir(p.cwd)) throw httpErr(400, 'Not a directory: ' + p.cwd); if (isTemp(p.cwd)) throw httpErr(400, tempMsg(p.cwd)); }
       cfg = saveConfig(p); return pub(cfg);
     }],
