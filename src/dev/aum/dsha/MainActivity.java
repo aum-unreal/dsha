@@ -243,7 +243,7 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
         return ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) && u.getHost() != null;
     }
 
-    private String base() { return builtin() ? Backend.url() : prefs.getString("url", "http://127.0.0.1:8787").replaceAll("/+$", ""); }
+    private String base() { return builtin() ? Backend.url(this) : prefs.getString("url", "http://127.0.0.1:8787").replaceAll("/+$", ""); }
     private String token() { return builtin() ? Backend.token(this) : prefs.getString("token", ""); }
 
     private HttpURLConnection open(String method, String path) throws IOException {

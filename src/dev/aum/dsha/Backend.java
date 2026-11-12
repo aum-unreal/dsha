@@ -16,7 +16,7 @@ import org.json.*;
 // This foreground service unpacks dsh into files/, keeps `node dsh.mjs serve` alive on loopback and
 // shows the "dsh is running" notification. The Termux build has no libnode.so and never starts it.
 public class Backend extends Service {
-    static final int PORT = 8788; // a Termux dsh may hold 8787 on the same phone
+    static final int PORT = 8788; // the first choice: a Termux dsh may hold 8787 on the same phone
     static final String STOP = "dev.aum.dsha.STOP_DSH";
     private static java.lang.Process proc;
     private static volatile boolean stopping;
@@ -24,7 +24,20 @@ public class Backend extends Service {
 
     static boolean available(Context c) { return new File(c.getApplicationInfo().nativeLibraryDir, "libnode.so").exists(); }
     static boolean running() { return proc != null && proc.isAlive(); }
-    static String url() { return "http://127.0.0.1:" + PORT; }
+    // Loopback ports are shared by every app, and another DSHA Standalone (the old dev.aum.dsha.standalone) also wants
+    // 8788, so the port lives in dsh's config and moves to a free one when it's taken (pickPort, before each start).
+    static String url(Context c) { return "http://127.0.0.1:" + port(c); }
+    static int port(Context c) { try { return new JSONObject(read(config(c))).optInt("port", PORT); } catch (Exception e) { return PORT; } }
+    private static boolean free(int p) {
+        try (java.net.ServerSocket s = new java.net.ServerSocket()) { s.setReuseAddress(true); s.bind(new java.net.InetSocketAddress("127.0.0.1", p)); return true; } catch (IOException e) { return false; }
+    }
+    private static void pickPort(Context c) throws Exception {
+        int p = port(c); if (free(p)) return;
+        if (p != PORT && free(PORT)) p = PORT;
+        else try (java.net.ServerSocket s = new java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))) { p = s.getLocalPort(); }
+        JSONObject cfg = new JSONObject(read(config(c))); cfg.put("port", p); write(config(c), cfg.toString(1));
+        append(new File(home(c), ".dsh/dsh.log"), "[DSHA] port taken by another app; dsh now uses " + p + "\n");
+    }
     static File home(Context c) { return c.getFilesDir(); }
     static File config(Context c) { return new File(home(c), ".dsh/config.json"); }
 
@@ -93,6 +106,7 @@ public class Backend extends Service {
     private void launch() {
         try {
             install(this);
+            pickPort(this);
             File h = home(this), log = new File(h, ".dsh/dsh.log");
             if (log.length() > 1_000_000) log.delete();
             ProcessBuilder pb = new ProcessBuilder(new File(getApplicationInfo().nativeLibraryDir, "libnode.so").getPath(), new File(h, "dsh/dsh.mjs").getPath(), "serve")
@@ -113,7 +127,7 @@ public class Backend extends Service {
     }
 
     private static void kill() { java.lang.Process p = proc; proc = null; if (p != null) { p.destroy(); try { if (!p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) p.destroyForcibly(); } catch (InterruptedException ignored) {} } }
-    @Override public void onDestroy() { stopping = true; kill(); RunService.stopFor(url()); super.onDestroy(); }
+    @Override public void onDestroy() { stopping = true; kill(); RunService.stopFor(url(this)); super.onDestroy(); }
 
     static String read(File f) { try (InputStream in = new FileInputStream(f)) { ByteArrayOutputStream b = new ByteArrayOutputStream(); pipe(in, b); return b.toString("UTF-8"); } catch (IOException e) { return ""; } }
     static String tail(File f, int n) { String s = read(f); return s.length() > n ? s.substring(s.length() - n) : s; }

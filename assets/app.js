@@ -1107,6 +1107,7 @@ function startingUp(err) {
   startTries = 0;
   const logTail = N?.backendLog?.() || '';
   onboardScreen("dsh didn't start", err || 'No answer from the built-in backend.', `<button class="primary wide" id="obRestart">${I.retry}Restart dsh</button>${logTail ? `<pre class="oblog">${esc(logTail.slice(-1500))}</pre>` : ''}<button class="secondary wide" id="obTermux">Use dsh in Termux instead</button>`);
+  const lg = $('.oblog'); if (lg) lg.scrollTop = lg.scrollHeight; // the newest lines hold the error
   $('#obRestart').onclick = () => { haptic(); N?.restartBackend(); setTimeout(boot, 2000); onboardScreen('Restarting dsh…', ''); };
   $('#obTermux').onclick = () => { haptic(); N?.setBackend('termux'); boot(); };
 }
