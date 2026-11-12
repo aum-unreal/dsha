@@ -1,9 +1,10 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # No-Gradle build (recipe A in ~/android-dev/TOOLCHAIN.md).
 #   ./build.sh             DSHA, the Termux build (dev.aum.dsha)            → dsha.apk
-#   ./build.sh standalone  DSHA Standalone, dsh and Node inside the app      → dsha-standalone.apk
-# Standalone adds runtime/arm64-v8a (scripts/prepare-runtime.sh, from Termux's node) as
-# lib/arm64-v8a/*.so, dsh's source as assets/dsh, and the Backend service to the manifest.
+#   ./build.sh standalone  DSHA Standalone (dev.aum.ds), dsh, Node and Termux inside the app → dsha-standalone.apk
+# Standalone adds runtime/arm64-v8a (scripts/prepare-runtime.sh: Termux's node and proot) as lib/arm64-v8a/*.so,
+# dsh's source as assets/dsh, the Termux bootstrap and scripts/termux/ as assets/termux, and the Backend service.
+# Its app id must stay 10 characters, the length of com.termux (Termux.java patches the bootstrap byte for byte).
 set -euo pipefail
 cd "$(dirname "$0")"
 FLAVOR=${1:-termux}
@@ -11,10 +12,11 @@ ANDROID_JAR="$HOME/dev/sdk/android.jar"
 rm -rf build && mkdir -p build/{res,gen,classes,dex}
 MANIFEST=AndroidManifest.xml ASSETS=assets OUT=dsha.apk LINK=()
 if [ "$FLAVOR" = standalone ]; then
-  [ -f runtime/arm64-v8a/libnode.so ] || scripts/prepare-runtime.sh
+  [ -f runtime/arm64-v8a/libproot-loader.so ] && [ -f runtime/bootstrap-aarch64.zip ] || scripts/prepare-runtime.sh
   MANIFEST=build/AndroidManifest.xml ASSETS=build/assets OUT=dsha-standalone.apk
-  LINK=(--rename-manifest-package dev.aum.dsha.standalone --custom-package dev.aum.dsha)
+  LINK=(--rename-manifest-package dev.aum.ds --custom-package dev.aum.dsha)
   cp -r assets build/assets && cp -r server build/assets/dsh && rm -rf build/assets/dsh/test
+  mkdir build/assets/termux && cp scripts/termux/* runtime/bootstrap-aarch64.zip build/assets/termux/
   python - <<'PY'
 m = open('AndroidManifest.xml').read()
 perms = ''.join(f'  <uses-permission android:name="android.permission.{p}"/>\n' for p in ['MANAGE_EXTERNAL_STORAGE'])

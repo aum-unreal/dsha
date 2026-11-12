@@ -6,10 +6,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { DeepSeek, cost, isPeak, asApiError } from './deepseek.mjs';
-import { TOOLS, schemas, summarize, clip, editInCwd } from './tools.mjs';
+import { TOOLS, schemas, summarize, clip, editInCwd, termuxReady } from './tools.mjs';
 import { contextFiles, skillPrompt, memoryPrompt } from './skills.mjs';
 import { agentPrompt, resolveAgent } from './agents.mjs';
-import { saveSession, loadSession, readKey } from './store.mjs';
+import { saveSession, loadSession, readKey, HOME as DSH_HOME } from './store.mjs';
 import { logUsage } from './usage.mjs';
 
 const runtimes = new Map();
@@ -44,16 +44,23 @@ export const activeRuns = () => [...runtimes.values()].filter(r => r.running).ma
 
 // What the Android app sandbox offers (checked on a Galaxy Z Fold, Android 15): toybox, no package manager.
 const SANDBOX = `The shell is Android's /system/bin/sh with toybox: ls, cat, grep, sed, awk, find, xargs, tar, gzip, diff, curl and the like. There is no git, python, bash or package manager; node (Node ${process.versions.node.split('.')[0]}) is on PATH for scripts and small servers. ~ is this app's private storage (projects in ~/projects); the phone's shared storage is /storage/emulated/0, readable only if the user allowed all-files access in Settings. The user can switch DSHA to Termux for a full Linux environment.`;
+// DSHA Standalone with its own Termux (Termux.java writes the first-run setup state to ~/.dsh/termux.json).
+export function termuxState() { try { return JSON.parse(fs.readFileSync(path.join(DSH_HOME, 'termux.json'), 'utf8')); } catch { return null; } }
+function sandboxText() {
+  if (!termuxReady()) return SANDBOX;
+  const st = termuxState()?.state;
+  return `The shell is bash in a full Termux environment built into this app ($PREFIX=${process.env.DSH_TERMUX_PREFIX}): install anything from Termux's repos with \`pkg install -y <pkg>\` (python, clang, nodejs, rust, golang, openssh, ...). git, gh, proot and proot-distro come preinstalled; run other Linux distributions with proot-distro (\`proot-distro install alpine\`, then \`proot-distro login alpine -- <command>\`). Android's own tools in /system/bin work too. ~ is this app's private storage (projects in ~/projects); the phone's shared storage is /storage/emulated/0, readable only if the user allowed all-files access in Settings. ${st === 'ready' ? '' : st === 'failed' ? 'The first-run package install failed (see ~/.dsh/termux-setup.log); rerun `apt-get update && pkg install -y git gh proot proot-distro` if you need them. ' : 'First-run setup is still installing git, gh, proot and proot-distro (log: ~/.dsh/termux-setup.log); apt and dpkg are locked until it finishes, so wait for it before installing packages. '}`;
+}
 export function systemPrompt(s, mcp = '') {
   const files = contextFiles(s.cwd), skills = skillPrompt(s.cwd), memory = memoryPrompt(), agents = agentPrompt(s.cwd);
   const standalone = !!process.env.DSH_STANDALONE;
-  return `You are dsh, a coding and operations agent running on the user's own machine (${os.platform()} ${os.arch()}${standalone ? ', inside the DSHA Standalone app on Android, no Termux' : process.env.PREFIX ? ', Termux on Android' : ''}) and talking to them through the DSHA phone app.
+  return `You are dsh, a coding and operations agent running on the user's own machine (${os.platform()} ${os.arch()}${standalone ? (termuxReady() ? ', inside the DSHA Standalone app on Android, with its own built-in Termux' : ', inside the DSHA Standalone app on Android, no Termux') : process.env.PREFIX ? ', Termux on Android' : ''}) and talking to them through the DSHA phone app.
 Working directory: ${s.cwd}
 Date: ${new Date().toISOString().slice(0, 10)}
 
 How to work:
 - Use the tools to inspect before you change things. Read a file before editing it; prefer edit_file over rewriting whole files.
-- Paths are relative to the working directory unless absolute. ${standalone ? SANDBOX : 'The shell is bash; Termux binaries live in $PREFIX/bin.'}
+- Paths are relative to the working directory unless absolute. ${standalone ? sandboxText() : 'The shell is bash; Termux binaries live in $PREFIX/bin.'}
 - Keep the user informed in short prose. Final answers: concise, Markdown, lead with the result. On a phone screen, avoid wide tables.
 - For multi-step tasks keep a todo list with todo_write.
 - Tool calls may be denied by the user; if so, don't retry the same call — adjust or ask.

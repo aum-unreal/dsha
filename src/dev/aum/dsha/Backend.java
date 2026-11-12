@@ -61,6 +61,7 @@ public class Backend extends Service {
         Notification n = notification();
         if (Build.VERSION.SDK_INT >= 34) startForeground(2, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE); else startForeground(2, n);
         if (!running()) new Thread(this::launch, "dsh").start();
+        Termux.setup(this);
         return START_STICKY;
     }
 
@@ -73,6 +74,21 @@ public class Backend extends Service {
             .addAction(new Notification.Action.Builder(null, "Stop", stop).build()).setOngoing(true).build();
     }
 
+    // dsh's environment. With the in-app Termux (Termux.java) it also gets DSH_TERMUX_*, which its bash tool uses.
+    static Map<String, String> env(Context c) {
+        File h = home(c); String lib = c.getApplicationInfo().nativeLibraryDir;
+        Map<String, String> e = new HashMap<>(System.getenv());
+        e.put("LD_LIBRARY_PATH", lib);
+        e.put("HOME", h.getPath());
+        e.put("TMPDIR", c.getCacheDir().getPath());
+        e.put("SHELL", "/system/bin/sh");
+        e.put("PATH", new File(h, "bin").getPath() + ":" + e.getOrDefault("PATH", "/system/bin"));
+        e.put("DSH_TEMP_ROOTS", c.getCacheDir().getPath());
+        e.put("DSH_STANDALONE", "1");
+        Termux.env(c, e);
+        return e;
+    }
+
     // Runs dsh and restarts it if it dies, unless it keeps dying (5 times in a minute), so a broken unpack can't spin.
     private void launch() {
         try {
@@ -81,14 +97,7 @@ public class Backend extends Service {
             if (log.length() > 1_000_000) log.delete();
             ProcessBuilder pb = new ProcessBuilder(new File(getApplicationInfo().nativeLibraryDir, "libnode.so").getPath(), new File(h, "dsh/dsh.mjs").getPath(), "serve")
                 .directory(h).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(log));
-            Map<String, String> e = pb.environment();
-            e.put("LD_LIBRARY_PATH", getApplicationInfo().nativeLibraryDir);
-            e.put("HOME", h.getPath());
-            e.put("TMPDIR", getCacheDir().getPath());
-            e.put("SHELL", "/system/bin/sh");
-            e.put("PATH", new File(h, "bin").getPath() + ":" + e.getOrDefault("PATH", "/system/bin"));
-            e.put("DSH_TEMP_ROOTS", getCacheDir().getPath());
-            e.put("DSH_STANDALONE", "1");
+            pb.environment().putAll(env(this));
             synchronized (Backend.class) { if (running()) return; proc = pb.start(); }
             int code = proc.waitFor();
             if (stopping) return;

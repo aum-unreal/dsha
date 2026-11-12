@@ -11,11 +11,11 @@ import { runtime, dropRuntime, activeRuns, apiState } from './agent.mjs';
 import { DeepSeek } from './deepseek.mjs';
 import { Mcp, loadMcpConfig, saveMcpConfig } from './mcp.mjs';
 import { listSkills, readSkill, setSkill, setClaudeSkills, createSkill, deleteSkill, instructionFiles, writeInstructions, listMemory, readMemory, deleteMemory } from './skills.mjs';
-import { systemPrompt } from './agent.mjs';
+import { systemPrompt, termuxState } from './agent.mjs';
 import { listAgents, readAgent, saveAgent, setAgent, setClaudeAgents, deleteAgent } from './agents.mjs';
-import { TOOLS, editInCwd } from './tools.mjs';
+import { TOOLS, editInCwd, termuxReady } from './tools.mjs';
 
-export const VERSION = '0.11.1';
+export const VERSION = '0.12.0';
 const BOOT = crypto.randomBytes(6).toString('hex'); // tells a client the server restarted (event seqs start again)
 
 export function createServer({ config = loadConfig } = {}) {
@@ -37,7 +37,7 @@ export function createServer({ config = loadConfig } = {}) {
     return { ...listAgents(cwd), tools };
   };
   const routes = [
-    ['GET', /^\/api\/health$/, () => ({ ok: true, version: VERSION, pid: process.pid, boot: BOOT, standalone: !!process.env.DSH_STANDALONE, hasKey: !!readKey(), model: cfg.model, home: HOME, running: activeRuns(), tempRoots: TEMP_ROOTS, userHome: USER_HOME, api: apiState })],
+    ['GET', /^\/api\/health$/, () => ({ ok: true, version: VERSION, pid: process.pid, boot: BOOT, standalone: !!process.env.DSH_STANDALONE, hasKey: !!readKey(), model: cfg.model, home: HOME, running: activeRuns(), tempRoots: TEMP_ROOTS, userHome: USER_HOME, api: apiState, termux: process.env.DSH_TERMUX_PREFIX ? { ready: termuxReady(), ...termuxState() } : null })],
     ['GET', /^\/api\/config$/, () => pub(cfg)],
     ['PUT', /^\/api\/config$/, (_, b) => {
       const p = pick(b, ['model', 'effort', 'mode', 'thinking', 'maxSteps', 'cwd', 'base']);

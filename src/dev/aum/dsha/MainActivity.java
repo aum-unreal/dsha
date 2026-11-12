@@ -165,6 +165,16 @@ public class MainActivity extends Activity implements android.hardware.SensorEve
     @Override protected void onDestroy() { for (HttpURLConnection c : streams.values()) c.disconnect(); pool.shutdownNow(); if (web != null) web.destroy(); if (preview != null) preview.destroy(); super.onDestroy(); }
 
     private void handleIntent(Intent i) {
+        // `am start -n dev.aum.ds/dev.aum.dsha.MainActivity --ez selfcheck true`: Standalone's Termux self-check
+        // (Termux.java). Any app can send this intent and the check downloads packages, so the user confirms it.
+        if (i != null && i.getBooleanExtra("selfcheck", false) && standalone && Termux.supported(this)) {
+            i.removeExtra("selfcheck");
+            new android.app.AlertDialog.Builder(this).setTitle("Run the self-check?")
+                .setMessage("Checks the built-in Termux: apt, git, gh, Python and an Alpine system under proot. It downloads about 300 MB and saves a report to Download.")
+                .setPositiveButton("Run", (d, w) -> { Termux.selfCheck(this, Backend.env(this)); android.widget.Toast.makeText(this, "Self-check running; the report goes to Download", android.widget.Toast.LENGTH_LONG).show(); })
+                .setNegativeButton("Cancel", null).show();
+            return;
+        }
         if (i == null || !Intent.ACTION_SEND.equals(i.getAction())) return;
         String t = i.getStringExtra(Intent.EXTRA_TEXT), sub = i.getStringExtra(Intent.EXTRA_SUBJECT);
         if (t == null) return;

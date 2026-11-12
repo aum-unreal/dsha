@@ -79,7 +79,7 @@ export function editInCwd(cwd, p) {
   if (!f || !root || !inside(root, f) || f === root) return false;
   if (path.relative(root, f).split(path.sep).includes('.git')) return false;
   // $PREFIX holds the binaries tools run (rg, bash); only its tmp (Termux's $TMPDIR) is a place to work in.
-  if (process.env.PREFIX && inside(real(process.env.PREFIX), f) && !inside(real(process.env.PREFIX + '/tmp'), f)) return false;
+  for (const pre of [process.env.PREFIX, process.env.DSH_TERMUX_PREFIX, process.env.DSH_TERMUX_BIN]) if (pre && inside(real(pre) || path.resolve(pre), f) && !inside(real(pre + '/tmp') || path.resolve(pre, 'tmp'), f)) return false;
   for (const h of new Set([HOME_DIR, real(HOME_DIR)])) if (h !== '/' && inside(h, f) && path.relative(h, f).startsWith('.')) return false;
   if (inside(real(DSH_STATE), f)) return false;
   return true;
@@ -94,10 +94,25 @@ function resolve(ctx, p) {
 // Runs a command in its own process group so stop/timeout kills the whole tree.
 // $SHELL, else bash, else Android's sh (DSHA Standalone sets SHELL, but nothing should hang on it).
 const DEFAULT_SHELL = process.env.SHELL || [PREFIX + '/bin/bash', '/bin/bash', '/system/bin/sh'].find(p => existsSync(p)) || '/bin/sh';
+// DSHA Standalone's own Termux (Termux.java, DSH_TERMUX_PREFIX): Android won't execve files in app storage, so bash
+// starts as `linker64 bash` and termux-exec's linker preload sends every later exec through linker64. Checked per
+// command: the app unpacks the prefix in the background on first start, and Android's sh serves until then.
+const TX = process.env.DSH_TERMUX_PREFIX || '';
+export const termuxReady = () => !!TX && existsSync(TX + '/bin/bash') && existsSync(TX + '/lib/libtermux-exec-linker-ld-preload.so');
+export function termuxEnv(env = process.env) {
+  const data = path.dirname(path.dirname(TX));
+  return { ...env, PREFIX: TX, TMPDIR: TX + '/tmp', SHELL: TX + '/bin/bash', LANG: env.LANG || 'en_US.UTF-8',
+    PATH: [process.env.DSH_TERMUX_BIN, TX + '/bin', ...(env.PATH || '/system/bin').split(':')].filter(Boolean).join(':'),
+    LD_PRELOAD: TX + '/lib/libtermux-exec-linker-ld-preload.so', TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE: 'force',
+    TERMUX__PREFIX: TX, TERMUX__ROOTFS: path.dirname(TX), TERMUX_APP__DATA_DIR: data, TERMUX__SE_PROCESS_CONTEXT: 'u:r:untrusted_app:s0' };
+}
 export function sh(command, { cwd, timeout = 120, signal, onData, shell = DEFAULT_SHELL } = {}) {
   return new Promise(res => {
     let out = '', tail = '', total = 0, done = false, killed = '';
-    const p = spawn(shell, ['-c', command], { cwd, detached: true, env: { ...process.env, TERM: 'dumb', PAGER: 'cat', GIT_PAGER: 'cat' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const tx = shell === DEFAULT_SHELL && termuxReady();
+    const env = { ...(tx ? termuxEnv() : process.env), TERM: 'dumb', PAGER: 'cat', GIT_PAGER: 'cat' };
+    const p = tx ? spawn('/system/bin/linker64', [TX + '/bin/bash', '-c', command], { cwd, detached: true, env, stdio: ['ignore', 'pipe', 'pipe'] })
+      : spawn(shell, ['-c', command], { cwd, detached: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
     const kill = why => { if (done) return; killed = why; try { process.kill(-p.pid, 'SIGTERM'); setTimeout(() => { try { process.kill(-p.pid, 'SIGKILL'); } catch {} }, 1500); } catch {} };
     const t = setTimeout(() => kill(`timed out after ${timeout}s`), timeout * 1000);
     const ab = () => kill('stopped by user');

@@ -1,0 +1,28 @@
+#!@NEW@/files/usr/bin/bash
+# dpkg wrapper (apt's Dir::Bin::dpkg). Termux's .debs install under @OLD@; this app's prefix is
+# @NEW@ (same length), so each package is unpacked, moved, byte-patched and rebuilt before the real
+# dpkg sees it. apt passes packages either as .deb paths or, usually, as `--recursive <dir>` of
+# numbered links (apt-dpkg-install-XXXX/NN-name.deb): both are handled.
+exec 2>>"${TMPDIR:-@NEW@/files/usr/tmp}/tx-dpkg.log"; echo "== $(date +%T) tx-dpkg $*" >&2
+OLD=@OLD@ NEW=@NEW@ DPKG=${TX_DPKG:-@NEW@/files/usr/bin/dpkg}
+repack() { # $1: a .deb; prints the path of the rebuilt one
+  local d; d=$(mktemp -d "${TMPDIR:-/tmp}/deb.XXXXXX") || return 1
+  dpkg-deb -R "$1" "$d/x" || return 1
+  if [ -d "$d/x$OLD" ]; then mkdir -p "$d/x$NEW" && cp -a "$d/x$OLD/." "$d/x$NEW/" && rm -rf "$d/x$OLD" || return 1; fi
+  grep -rlF --null "$OLD" "$d/x" 2>/dev/null | xargs -0 -r sed -i "s#${OLD//./\\.}#$NEW#g"
+  find "$d/x" -type l | while read -r l; do t=$(readlink "$l"); case $t in *"$OLD"*) ln -sfn "${t//$OLD/$NEW}" "$l";; esac; done
+  # sed -i leaves rewritten files 0700; dpkg-deb wants the control dir and maintainer scripts 0555..0775
+  chmod 0755 "$d/x/DEBIAN"; for m in preinst postinst prerm postrm config; do [ -f "$d/x/DEBIAN/$m" ] && chmod 0755 "$d/x/DEBIAN/$m"; done
+  dpkg-deb -b -Zgzip -z1 "$d/x" "$d/p.deb" >/dev/null || return 1
+  rm -rf "$d/x"; echo "$d/p.deb"
+}
+args=()
+for a in "$@"; do
+  if [[ -d $a ]]; then
+    for f in "$a"/*.deb; do [ -e "$f" ] || continue; p=$(repack "$f") || { echo "tx-dpkg: could not repack $f" >&2; exit 1; }; rm -f "$f"; mv "$p" "$f"; done
+  elif [[ $a == *.deb && -f $a ]]; then
+    p=$(repack "$a") || { echo "tx-dpkg: could not repack $a" >&2; exit 1; }; a=$p
+  fi
+  args+=("$a")
+done
+exec "$DPKG" "${args[@]}"
